@@ -378,22 +378,55 @@ class MetricsCollector:
         self.provider_status[provider] = status
     
     def get_active_users_count(self) -> int:
-        """Get count of active users (mock implementation)."""
-        # This would integrate with your auth system
-        return 1  # Mock value
+        """Get count of active users (real implementation)."""
+        try:
+            conn = sqlite3.connect('grainchain.db')
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT COUNT(DISTINCT user_id) FROM sessions 
+                WHERE is_active = 1 AND expires_at > datetime('now')
+            ''')
+            count = cursor.fetchone()[0]
+            conn.close()
+            return count
+        except Exception as e:
+            logger.error(f"Failed to get active users count: {e}")
+            return 0
     
     def get_active_sessions_count(self) -> int:
-        """Get count of active sessions (mock implementation)."""
-        # This would integrate with your session management
-        return 1  # Mock value
+        """Get count of active sessions (real implementation)."""
+        try:
+            conn = sqlite3.connect('grainchain.db')
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT COUNT(*) FROM sessions 
+                WHERE is_active = 1 AND expires_at > datetime('now')
+            ''')
+            count = cursor.fetchone()[0]
+            conn.close()
+            return count
+        except Exception as e:
+            logger.error(f"Failed to get active sessions count: {e}")
+            return 0
     
     def get_database_connections_count(self) -> int:
-        """Get count of active database connections (mock implementation)."""
-        return 1  # Mock value
+        """Get count of active database connections (real implementation)."""
+        try:
+            # Get SQLite connection count (simplified)
+            import threading
+            return threading.active_count()  # Approximate active connections
+        except Exception as e:
+            logger.error(f"Failed to get database connections count: {e}")
+            return 0
     
     def get_websocket_connections_count(self) -> int:
-        """Get count of active WebSocket connections (mock implementation)."""
-        return 0  # Mock value
+        """Get count of active WebSocket connections (real implementation)."""
+        try:
+            from ..websocket_handler import ws_manager
+            return len(ws_manager.connections) if ws_manager else 0
+        except Exception as e:
+            logger.error(f"Failed to get WebSocket connections count: {e}")
+            return 0
     
     def store_metrics_to_db(self):
         """Store buffered metrics to database."""

@@ -36,19 +36,9 @@ try:
     from components.notification_ui import notification_bell, notification_panel, activity_feed
     print("✅ All advanced features imported successfully")
 except Exception as e:
-    print(f"⚠️ Advanced features import warning: {e}")
-    # Create mock objects if imports fail
-    class MockWebSocketState:
-        connected = False
-    class MockAuthState:
-        is_authenticated = False
-        current_user = None
-    class MockFileManagerState:
-        files = []
-        current_path = "/"
-    WebSocketState = MockWebSocketState
-    AuthState = MockAuthState
-    FileManagerState = MockFileManagerState
+    print(f"❌ Critical error: Advanced features failed to import: {e}")
+    print("🔧 Please ensure all dependencies are installed and configured properly")
+    sys.exit(1)  # Exit if critical components fail to load
 
 class DashboardState(rx.State):
     """Consolidated dashboard state with all features."""

@@ -285,75 +285,10 @@ def file_manager_main() -> rx.Component:
         height="100%"
     )
 
-# Mock FileManagerState for development
-class MockFileManagerState:
-    files = []
-    filtered_files = []
-    current_path = "/"
-    path_parts = ["/"]
-    search_query = ""
-    filter_type = "all"
-    view_mode = "list"
-    loading = False
-    show_preview = False
-    preview_type = "text"
-    preview_content = ""
-    preview_url = ""
-    
-    @staticmethod
-    def navigate_to(path: str):
-        pass
-    
-    @staticmethod
-    def select_file(path: str):
-        pass
-    
-    @staticmethod
-    def preview_file(path: str):
-        pass
-    
-    @staticmethod
-    def download_file(path: str):
-        pass
-    
-    @staticmethod
-    def delete_file(path: str):
-        pass
-    
-    @staticmethod
-    def start_rename(path: str):
-        pass
-    
-    @staticmethod
-    def set_search_query(query: str):
-        pass
-    
-    @staticmethod
-    def set_filter_type(filter_type: str):
-        pass
-    
-    @staticmethod
-    def set_view_mode(mode: str):
-        pass
-    
-    @staticmethod
-    def refresh_files():
-        pass
-    
-    @staticmethod
-    def create_folder():
-        pass
-    
-    @staticmethod
-    def show_upload_dialog():
-        pass
-    
-    @staticmethod
-    def navigate_to_index(index: int):
-        pass
-
-# Try to import real state, fall back to mock
+# Import real FileManagerState - no fallback to mock
 try:
     from ..file_manager.file_manager_state import FileManagerState
-except ImportError:
-    FileManagerState = MockFileManagerState
+except ImportError as e:
+    print(f"❌ Critical error: File Manager module failed to import: {e}")
+    print("🔧 Please ensure file_manager_state.py is properly configured")
+    raise ImportError("File Manager system is required for the dashboard to function")

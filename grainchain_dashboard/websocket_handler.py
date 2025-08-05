@@ -132,16 +132,33 @@ class WebSocketManager:
         }, 'terminal')
     
     async def execute_command(self, command: str) -> str:
-        """Execute command and return output (mock implementation)."""
-        # This is a mock implementation - replace with actual command execution
-        if command.startswith('ls'):
-            return "main.py\nREADME.md\nsrc/\ntests/\nrequirements.txt"
-        elif command.startswith('pwd'):
-            return "/home/user/workspace"
-        elif command.startswith('echo'):
-            return command[5:]  # Return everything after 'echo '
-        else:
-            return f"Command executed: {command}"
+        """Execute command and return output (real implementation)."""
+        import subprocess
+        import asyncio
+        
+        try:
+            # Execute command in a subprocess with timeout
+            process = await asyncio.create_subprocess_shell(
+                command,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+                cwd="/tmp"  # Safe working directory
+            )
+            
+            # Wait for completion with timeout
+            stdout, _ = await asyncio.wait_for(
+                process.communicate(), 
+                timeout=30.0  # 30 second timeout
+            )
+            
+            output = stdout.decode('utf-8', errors='replace')
+            return output.strip() if output else f"Command completed: {command}"
+            
+        except asyncio.TimeoutError:
+            return f"Command timed out: {command}"
+        except Exception as e:
+            logger.error(f"Command execution failed: {e}")
+            return f"Command failed: {command}\nError: {str(e)}"
     
     async def handle_file_change(self, file_path: str, change_type: str):
         """Handle file system changes."""

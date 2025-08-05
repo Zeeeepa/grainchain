@@ -183,14 +183,34 @@ class EnhancedDashboardState(rx.State):
             logger.error(f"Failed to load command history: {e}")
     
     def update_statistics(self):
-        """Update dashboard statistics."""
+        """Update dashboard statistics (real implementation)."""
         try:
-            # These would be updated based on actual sandbox status
-            self.active_sandboxes_count = 1  # Mock data
+            # Get real active sandboxes count from providers
+            active_count = 0
+            for provider_name, provider_info in self.providers.items():
+                if provider_info.get("status") == "connected":
+                    # Count active environments/workspaces from each provider
+                    if provider_name == "e2b":
+                        from .providers.e2b_provider import e2b_provider
+                        active_count += len(e2b_provider.sandboxes)
+                    elif provider_name == "daytona":
+                        from .providers.daytona_provider import daytona_provider
+                        active_count += len(daytona_provider.workspaces)
+                    elif provider_name == "morph":
+                        from .providers.morph_provider import morph_provider
+                        active_count += len(morph_provider.environments)
+                    elif provider_name == "modal":
+                        from .providers.modal_provider import modal_provider
+                        active_count += len(modal_provider.functions)
+            
+            self.active_sandboxes_count = active_count
             self.providers_count = len(self.providers)
             
         except Exception as e:
             logger.error(f"Failed to update statistics: {e}")
+            # Fallback to basic count
+            self.active_sandboxes_count = 0
+            self.providers_count = len(self.providers)
     
     # Navigation Methods
     def set_page(self, page: str):

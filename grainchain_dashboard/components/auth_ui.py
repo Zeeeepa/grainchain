@@ -166,19 +166,7 @@ def role_guard(component: rx.Component, required_role: str) -> rx.Component:
 # Import AuthState for use in components
 try:
     from ..auth import AuthState
-except ImportError:
-    # Create mock state if auth module not available
-    class MockAuthState:
-        is_authenticated = False
-        current_user = None
-        login_error = ""
-        
-        @staticmethod
-        def login(username: str, password: str):
-            pass
-        
-        @staticmethod
-        def logout():
-            pass
-    
-    AuthState = MockAuthState
+except ImportError as e:
+    print(f"❌ Critical error: Authentication module failed to import: {e}")
+    print("🔧 Please ensure auth.py is properly configured")
+    raise ImportError("Authentication system is required for the dashboard to function")

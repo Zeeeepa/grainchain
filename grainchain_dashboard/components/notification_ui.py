@@ -307,61 +307,10 @@ def notification_preferences() -> rx.Component:
         width="100%"
     )
 
-# Mock NotificationState for development
-class MockNotificationState:
-    notifications = []
-    activities = []
-    unread_count = 0
-    show_panel = False
-    email_enabled = True
-    push_enabled = True
-    sound_enabled = True
-    notification_types = [
-        {"type": "info", "label": "Information", "enabled": True},
-        {"type": "success", "label": "Success", "enabled": True},
-        {"type": "warning", "label": "Warnings", "enabled": True},
-        {"type": "error", "label": "Errors", "enabled": True},
-        {"type": "system", "label": "System", "enabled": True}
-    ]
-    
-    @staticmethod
-    def toggle_panel():
-        pass
-    
-    @staticmethod
-    def mark_all_read():
-        pass
-    
-    @staticmethod
-    def mark_as_read(notification_id: str):
-        pass
-    
-    @staticmethod
-    def delete_notification(notification_id: str):
-        pass
-    
-    @staticmethod
-    def set_email_enabled(enabled: bool):
-        pass
-    
-    @staticmethod
-    def set_push_enabled(enabled: bool):
-        pass
-    
-    @staticmethod
-    def set_sound_enabled(enabled: bool):
-        pass
-    
-    @staticmethod
-    def toggle_type(type_name: str, enabled: bool):
-        pass
-    
-    @staticmethod
-    def save_preferences():
-        pass
-
-# Try to import real state, fall back to mock
+# Import real NotificationState - no fallback to mock
 try:
-    from ..notifications.notification_state import NotificationState
-except ImportError:
-    NotificationState = MockNotificationState
+    from ..notifications.notification_manager import NotificationState
+except ImportError as e:
+    print(f"❌ Critical error: Notification module failed to import: {e}")
+    print("🔧 Please ensure notification_manager.py is properly configured")
+    raise ImportError("Notification system is required for the dashboard to function")
