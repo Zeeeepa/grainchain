@@ -13,8 +13,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 
 # Import Grainchain core
-from grainchain import Grainchain
-from grainchain.core.interfaces import SandboxStatus, ExecutionResult, FileInfo, SandboxConfig
+from grainchain import Sandbox, SandboxConfig, Providers
+from grainchain.core.interfaces import SandboxStatus, ExecutionResult, FileInfo
 
 class DashboardState(rx.State):
     """Production Grainchain Dashboard State."""
@@ -23,7 +23,7 @@ class DashboardState(rx.State):
     current_page: str = "dashboard"
     
     # Core Grainchain instance
-    grainchain_instance: Optional[Grainchain] = None
+    grainchain_instance: Optional[Sandbox] = None
     
     # Active sandbox
     active_sandbox_id: Optional[str] = None
@@ -55,7 +55,8 @@ class DashboardState(rx.State):
         """Initialize Grainchain instance."""
         try:
             self.is_loading = True
-            self.grainchain_instance = Grainchain()
+            # Create a local sandbox instance for demonstration
+            self.grainchain_instance = Sandbox(provider="local")
             await self.refresh_providers()
             await self.refresh_sandboxes()
             self.success_message = "Grainchain initialized successfully"
