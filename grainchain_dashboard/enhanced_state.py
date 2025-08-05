@@ -8,9 +8,9 @@ import logging
 import os
 import json
 
-from .database import get_db_session, log_activity, get_setting, set_setting
-from .models import ProviderConfig, FileMetadata, Snapshot, CommandHistory, UserSettings
-from .utils.encryption import encrypt_api_key, decrypt_api_key, secure_api_key_display, validate_api_key_format, sanitize_input
+from database import get_db_session, log_activity, get_setting, set_setting
+from models import ProviderConfig, FileMetadata, Snapshot, CommandHistory, UserSettings
+from utils.encryption import encrypt_api_key, decrypt_api_key, secure_api_key_display, validate_api_key_format, sanitize_input
 
 logger = logging.getLogger(__name__)
 

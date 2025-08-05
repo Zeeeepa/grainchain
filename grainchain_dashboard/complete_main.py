@@ -2,10 +2,10 @@
 
 import reflex as rx
 from typing import Dict, List, Optional, Any
-from .enhanced_state import EnhancedDashboardState
+from enhanced_state import EnhancedDashboardState
 
 # Import UI components
-from .components.ui_components import (
+from components.ui_components import (
     modal_dialog, toast_notification, loading_spinner, 
     confirmation_dialog, file_icon, format_file_size
 )
