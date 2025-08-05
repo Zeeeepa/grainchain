@@ -1,11 +1,12 @@
-"""Final Working Grainchain Dashboard - Complete Implementation."""
+#!/usr/bin/env python3
+"""Standalone Grainchain Dashboard Application."""
 
 import reflex as rx
 from typing import Dict, List, Optional, Any
 import sys
 import os
 
-# Add current directory to path for imports
+# Add current directory to path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 # Initialize database first
@@ -16,8 +17,8 @@ try:
 except Exception as e:
     print(f"⚠️ Database initialization warning: {e}")
 
-class WorkingDashboardState(rx.State):
-    """Working dashboard state with all features."""
+class DashboardState(rx.State):
+    """Consolidated dashboard state with all features."""
     
     # Navigation
     current_page: str = "dashboard"
@@ -177,7 +178,6 @@ $ _"""
         """Delete a file."""
         self.files = [f for f in self.files if f["path"] != file_path]
 
-# UI Components
 def status_badge(status: str) -> rx.Component:
     """Status badge component."""
     color_map = {
@@ -207,38 +207,38 @@ def sidebar() -> rx.Component:
             rx.vstack(
                 rx.button(
                     rx.hstack(rx.icon("home", size=16), rx.text("Dashboard"), spacing="2"),
-                    on_click=lambda: WorkingDashboardState.set_page("dashboard"),
-                    variant=rx.cond(WorkingDashboardState.current_page == "dashboard", "soft", "ghost"),
+                    on_click=lambda: DashboardState.set_page("dashboard"),
+                    variant=rx.cond(DashboardState.current_page == "dashboard", "soft", "ghost"),
                     style={"width": "100%", "justify_content": "flex_start"}
                 ),
                 rx.button(
                     rx.hstack(rx.icon("plug", size=16), rx.text("Providers"), spacing="2"),
-                    on_click=lambda: WorkingDashboardState.set_page("providers"),
-                    variant=rx.cond(WorkingDashboardState.current_page == "providers", "soft", "ghost"),
+                    on_click=lambda: DashboardState.set_page("providers"),
+                    variant=rx.cond(DashboardState.current_page == "providers", "soft", "ghost"),
                     style={"width": "100%", "justify_content": "flex_start"}
                 ),
                 rx.button(
                     rx.hstack(rx.icon("terminal", size=16), rx.text("Terminal"), spacing="2"),
-                    on_click=lambda: WorkingDashboardState.set_page("terminal"),
-                    variant=rx.cond(WorkingDashboardState.current_page == "terminal", "soft", "ghost"),
+                    on_click=lambda: DashboardState.set_page("terminal"),
+                    variant=rx.cond(DashboardState.current_page == "terminal", "soft", "ghost"),
                     style={"width": "100%", "justify_content": "flex_start"}
                 ),
                 rx.button(
                     rx.hstack(rx.icon("folder", size=16), rx.text("Files"), spacing="2"),
-                    on_click=lambda: WorkingDashboardState.set_page("files"),
-                    variant=rx.cond(WorkingDashboardState.current_page == "files", "soft", "ghost"),
+                    on_click=lambda: DashboardState.set_page("files"),
+                    variant=rx.cond(DashboardState.current_page == "files", "soft", "ghost"),
                     style={"width": "100%", "justify_content": "flex_start"}
                 ),
                 rx.button(
                     rx.hstack(rx.icon("camera", size=16), rx.text("Snapshots"), spacing="2"),
-                    on_click=lambda: WorkingDashboardState.set_page("snapshots"),
-                    variant=rx.cond(WorkingDashboardState.current_page == "snapshots", "soft", "ghost"),
+                    on_click=lambda: DashboardState.set_page("snapshots"),
+                    variant=rx.cond(DashboardState.current_page == "snapshots", "soft", "ghost"),
                     style={"width": "100%", "justify_content": "flex_start"}
                 ),
                 rx.button(
                     rx.hstack(rx.icon("settings", size=16), rx.text("Settings"), spacing="2"),
-                    on_click=lambda: WorkingDashboardState.set_page("settings"),
-                    variant=rx.cond(WorkingDashboardState.current_page == "settings", "soft", "ghost"),
+                    on_click=lambda: DashboardState.set_page("settings"),
+                    variant=rx.cond(DashboardState.current_page == "settings", "soft", "ghost"),
                     style={"width": "100%", "justify_content": "flex_start"}
                 ),
                 spacing="2",
@@ -276,7 +276,7 @@ def dashboard_content() -> rx.Component:
             rx.card(
                 rx.vstack(
                     rx.text("Active Sandboxes", size="2", color="gray"),
-                    rx.text(WorkingDashboardState.active_sandboxes_count, size="6", weight="bold", color="green"),
+                    rx.text(DashboardState.active_sandboxes_count, size="6", weight="bold", color="green"),
                     spacing="1"
                 ),
                 style={"padding": "1.5rem", "min_width": "150px"}
@@ -284,7 +284,7 @@ def dashboard_content() -> rx.Component:
             rx.card(
                 rx.vstack(
                     rx.text("Providers", size="2", color="gray"),
-                    rx.text(WorkingDashboardState.providers_count, size="6", weight="bold", color="blue"),
+                    rx.text(DashboardState.providers_count, size="6", weight="bold", color="blue"),
                     spacing="1"
                 ),
                 style={"padding": "1.5rem", "min_width": "150px"}
@@ -292,7 +292,7 @@ def dashboard_content() -> rx.Component:
             rx.card(
                 rx.vstack(
                     rx.text("Commands Run", size="2", color="gray"),
-                    rx.text(WorkingDashboardState.commands_run_count, size="6", weight="bold", color="purple"),
+                    rx.text(DashboardState.commands_run_count, size="6", weight="bold", color="purple"),
                     spacing="1"
                 ),
                 style={"padding": "1.5rem", "min_width": "150px"}
@@ -308,22 +308,22 @@ def dashboard_content() -> rx.Component:
                 rx.grid(
                     rx.button(
                         rx.vstack(rx.icon("plus", size=20), rx.text("Create Snapshot"), spacing="2", align="center"),
-                        on_click=WorkingDashboardState.open_snapshot_modal,
+                        on_click=DashboardState.open_snapshot_modal,
                         variant="outline", style={"height": "80px", "width": "100%"}
                     ),
                     rx.button(
                         rx.vstack(rx.icon("upload", size=20), rx.text("Upload File"), spacing="2", align="center"),
-                        on_click=WorkingDashboardState.open_file_upload_modal,
+                        on_click=DashboardState.open_file_upload_modal,
                         variant="outline", style={"height": "80px", "width": "100%"}
                     ),
                     rx.button(
                         rx.vstack(rx.icon("settings", size=20), rx.text("Configure Provider"), spacing="2", align="center"),
-                        on_click=lambda: WorkingDashboardState.set_page("providers"),
+                        on_click=lambda: DashboardState.set_page("providers"),
                         variant="outline", style={"height": "80px", "width": "100%"}
                     ),
                     rx.button(
                         rx.vstack(rx.icon("terminal", size=20), rx.text("Open Terminal"), spacing="2", align="center"),
-                        on_click=lambda: WorkingDashboardState.set_page("terminal"),
+                        on_click=lambda: DashboardState.set_page("terminal"),
                         variant="outline", style={"height": "80px", "width": "100%"}
                     ),
                     columns="2", spacing="4"
@@ -345,7 +345,7 @@ def providers_content() -> rx.Component:
         
         rx.grid(
             rx.foreach(
-                WorkingDashboardState.providers,
+                DashboardState.providers,
                 lambda provider_name, provider_data: rx.card(
                     rx.vstack(
                         rx.hstack(
@@ -386,7 +386,7 @@ def terminal_content() -> rx.Component:
                 
                 rx.box(
                     rx.text(
-                        WorkingDashboardState.command_output,
+                        DashboardState.command_output,
                         style={
                             "font_family": "monospace",
                             "white_space": "pre",
@@ -406,11 +406,11 @@ def terminal_content() -> rx.Component:
                     rx.text("$", size="3", weight="bold", color="green"),
                     rx.input(
                         placeholder="Enter command...", 
-                        value=WorkingDashboardState.current_command,
-                        on_change=WorkingDashboardState.set_current_command,
+                        value=DashboardState.current_command,
+                        on_change=DashboardState.set_current_command,
                         style={"flex": "1", "font_family": "monospace"}
                     ),
-                    rx.button("Execute", color_scheme="blue", on_click=WorkingDashboardState.execute_command),
+                    rx.button("Execute", color_scheme="blue", on_click=DashboardState.execute_command),
                     spacing="3", width="100%"
                 ),
                 
@@ -448,7 +448,7 @@ def files_content() -> rx.Component:
                 ),
                 rx.table.body(
                     rx.foreach(
-                        WorkingDashboardState.files,
+                        DashboardState.files,
                         lambda file: rx.table.row(
                             rx.table.cell(
                                 rx.hstack(
@@ -492,7 +492,7 @@ def snapshots_content() -> rx.Component:
         
         rx.grid(
             rx.foreach(
-                WorkingDashboardState.snapshots,
+                DashboardState.snapshots,
                 lambda snapshot: rx.card(
                     rx.vstack(
                         rx.hstack(
@@ -536,17 +536,17 @@ def settings_content() -> rx.Component:
                     rx.vstack(
                         rx.hstack(
                             rx.text("Theme:", size="2", weight="medium"),
-                            rx.select(["Light", "Dark"], value=WorkingDashboardState.theme.title()),
+                            rx.select(["Light", "Dark"], value=DashboardState.theme.title()),
                             spacing="3", width="100%", justify="between"
                         ),
                         rx.hstack(
                             rx.text("Default Provider:", size="2", weight="medium"),
-                            rx.select(["Local", "E2B", "Daytona"], value=WorkingDashboardState.default_provider.title()),
+                            rx.select(["Local", "E2B", "Daytona"], value=DashboardState.default_provider.title()),
                             spacing="3", width="100%", justify="between"
                         ),
                         rx.hstack(
                             rx.text("Notifications:", size="2", weight="medium"),
-                            rx.switch(checked=WorkingDashboardState.notifications_enabled),
+                            rx.switch(checked=DashboardState.notifications_enabled),
                             spacing="3", width="100%", justify="between"
                         ),
                         spacing="4", width="100%"
@@ -581,7 +581,7 @@ def settings_content() -> rx.Component:
 def page_content() -> rx.Component:
     """Render page content based on current page."""
     return rx.match(
-        WorkingDashboardState.current_page,
+        DashboardState.current_page,
         ("dashboard", dashboard_content()),
         ("providers", providers_content()),
         ("terminal", terminal_content()),
@@ -609,7 +609,7 @@ app = rx.App(
     style={"font_family": "Inter, system-ui, sans-serif"}
 )
 
-app.add_page(index, route="/", title="Grainchain Dashboard - Complete Implementation")
+app.add_page(index, route="/", title="Grainchain Dashboard - Professional Sandbox Management")
 
 if __name__ == "__main__":
     print("🚀 Starting Grainchain Dashboard...")

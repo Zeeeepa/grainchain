@@ -1,10 +1,19 @@
 """Reflex configuration for Grainchain Dashboard."""
 
 import reflex as rx
-from config.settings import get_config
+import os
 
-# Get configuration
-config_settings = get_config()
+# Simple configuration without external dependencies
+class SimpleConfig:
+    APP_NAME = "app"
+    HOST = "0.0.0.0"
+    FRONTEND_PORT = 3000
+    BACKEND_PORT = 8000
+    DATABASE_URL = "sqlite:///grainchain.db"
+    DEBUG = True
+    DEFAULT_THEME = "dark"
+
+config_settings = SimpleConfig()
 
 # Reflex configuration
 config = rx.Config(
