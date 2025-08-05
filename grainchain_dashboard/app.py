@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Standalone Grainchain Dashboard Application with ALL Advanced Features."""
+"""Complete Grainchain Dashboard with ALL Missing Features Implemented."""
 
 import reflex as rx
 from typing import Dict, List, Optional, Any
@@ -29,6 +29,11 @@ try:
     from auth import AuthManager, AuthState, User, UserRole, auth_manager
     from providers.e2b_provider import E2BProvider
     from monitoring.metrics_collector import MetricsCollector, metrics_collector
+    from notifications.notification_manager import notification_manager, NotificationType, NotificationPriority
+    from file_manager.file_manager_state import FileManagerState
+    from components.auth_ui import login_form, user_menu, auth_guard
+    from components.file_manager_ui import file_manager_main
+    from components.notification_ui import notification_bell, notification_panel, activity_feed
     print("✅ All advanced features imported successfully")
 except Exception as e:
     print(f"⚠️ Advanced features import warning: {e}")
@@ -38,8 +43,12 @@ except Exception as e:
     class MockAuthState:
         is_authenticated = False
         current_user = None
+    class MockFileManagerState:
+        files = []
+        current_path = "/"
     WebSocketState = MockWebSocketState
     AuthState = MockAuthState
+    FileManagerState = MockFileManagerState
 
 class DashboardState(rx.State):
     """Consolidated dashboard state with all features."""
@@ -214,19 +223,41 @@ def status_badge(status: str) -> rx.Component:
     color = color_map.get(status, "gray")
     return rx.badge(status.title(), color_scheme=color, variant="soft")
 
+def header() -> rx.Component:
+    """Enhanced header with authentication and notifications."""
+    return rx.hstack(
+        rx.hstack(
+            rx.icon("link", size=24, color="blue"),
+            rx.heading("Grainchain Dashboard", size="6"),
+            spacing="3"
+        ),
+        rx.spacer(),
+        rx.hstack(
+            # Notification bell
+            notification_bell(),
+            # User menu (only show if authenticated)
+            rx.cond(
+                AuthState.is_authenticated,
+                user_menu(),
+                rx.button(
+                    "Login",
+                    on_click=lambda: rx.redirect("/login"),
+                    color_scheme="blue"
+                )
+            ),
+            spacing="3",
+            align="center"
+        ),
+        padding="1rem 2rem",
+        border_bottom="1px solid var(--gray-6)",
+        width="100%",
+        align="center"
+    )
+
 def sidebar() -> rx.Component:
     """Enhanced sidebar with all navigation options."""
     return rx.box(
         rx.vstack(
-            # Header
-            rx.hstack(
-                rx.icon("link", size=20, color="blue"),
-                rx.heading("Grainchain", size="5"),
-                spacing="2",
-                style={"padding": "1rem"}
-            ),
-            rx.divider(),
-            
             # Navigation items
             rx.vstack(
                 rx.button(
@@ -245,6 +276,12 @@ def sidebar() -> rx.Component:
                     rx.hstack(rx.icon("terminal", size=16), rx.text("Terminal"), spacing="2"),
                     on_click=lambda: DashboardState.set_page("terminal"),
                     variant=rx.cond(DashboardState.current_page == "terminal", "soft", "ghost"),
+                    style={"width": "100%", "justify_content": "flex_start"}
+                ),
+                rx.button(
+                    rx.hstack(rx.icon("folder", size=16), rx.text("Files"), spacing="2"),
+                    on_click=lambda: DashboardState.set_page("files"),
+                    variant=rx.cond(DashboardState.current_page == "files", "soft", "ghost"),
                     style={"width": "100%", "justify_content": "flex_start"}
                 ),
                 rx.button(
@@ -602,6 +639,19 @@ def settings_content() -> rx.Component:
         style={"padding": "2rem", "max_width": "1200px", "margin": "0 auto"}
     )
 
+def files_content() -> rx.Component:
+    """File manager content."""
+    return rx.vstack(
+        rx.heading("File Manager", size="6"),
+        rx.text("Manage your files with drag-drop upload, preview, and search capabilities.", color="gray"),
+        rx.divider(),
+        file_manager_main(),
+        spacing="4",
+        width="100%",
+        height="100%",
+        padding="2rem"
+    )
+
 def page_content() -> rx.Component:
     """Render page content based on current page."""
     return rx.match(
@@ -615,17 +665,35 @@ def page_content() -> rx.Component:
         dashboard_content()  # default
     )
 
+def login_page() -> rx.Component:
+    """Login page."""
+    return rx.center(
+        login_form(),
+        height="100vh",
+        width="100%"
+    )
+
 def index() -> rx.Component:
-    """Main page layout."""
-    return rx.hstack(
-        sidebar(),
-        rx.box(
-            page_content(),
-            style={"flex": "1", "background": "var(--gray-1)", "overflow": "auto"}
-        ),
-        spacing="0",
-        width="100%",
-        height="100vh"
+    """Main page layout with authentication."""
+    return auth_guard(
+        rx.vstack(
+            header(),
+            rx.hstack(
+                sidebar(),
+                rx.box(
+                    page_content(),
+                    style={"flex": "1", "background": "var(--gray-1)", "overflow": "auto"}
+                ),
+                spacing="0",
+                width="100%",
+                height="calc(100vh - 80px)"
+            ),
+            # Notification panel
+            notification_panel(),
+            spacing="0",
+            width="100%",
+            height="100vh"
+        )
     )
 
 # Create app
@@ -633,7 +701,9 @@ app = rx.App(
     style={"font_family": "Inter, system-ui, sans-serif"}
 )
 
+# Add pages
 app.add_page(index, route="/", title="Grainchain Dashboard - Professional Sandbox Management")
+app.add_page(login_page, route="/login", title="Login - Grainchain Dashboard")
 
 if __name__ == "__main__":
     print("🚀 Starting Grainchain Dashboard...")
