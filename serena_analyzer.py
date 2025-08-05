@@ -35,9 +35,11 @@ import tempfile
 import time
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass, asdict
-from typing import Dict, List, Optional, Tuple, Any, Union
+from dataclasses import dataclass, asdict, field
+from typing import Dict, List, Optional, Tuple, Any, Union, Callable
 from urllib.parse import urlparse
+from pathlib import Path
+from enum import IntEnum, Enum
 
 # Enhanced Serena and SolidLSP imports with comprehensive protocol support
 try:
@@ -214,6 +216,170 @@ class AnalysisResults:
         return asdict(self)
 
 
+class ErrorType(IntEnum):
+    """Types of errors that can be detected."""
+    STATIC_ANALYSIS = 1  # Syntax, import, type errors from static analysis
+    RUNTIME_ERROR = 2    # Errors that occur during execution
+    LINTING = 3         # Code style and quality issues
+    SECURITY = 4        # Security vulnerabilities
+    PERFORMANCE = 5     # Performance issues
+
+
+class ErrorCategory(Enum):
+    """Error categories for classification."""
+    SYNTAX = "syntax"
+    TYPE = "type"
+    LOGIC = "logic"
+    PERFORMANCE = "performance"
+    SECURITY = "security"
+    STYLE = "style"
+    COMPATIBILITY = "compatibility"
+    DEPENDENCY = "dependency"
+    UNKNOWN = "unknown"
+
+
+@dataclass
+class RuntimeContext:
+    """Runtime context information for errors that occur during execution."""
+    exception_type: str
+    stack_trace: List[str] = field(default_factory=list)
+    local_variables: Dict[str, Any] = field(default_factory=dict)
+    global_variables: Dict[str, Any] = field(default_factory=dict)
+    execution_path: List[str] = field(default_factory=list)
+    timestamp: float = field(default_factory=time.time)
+    thread_id: Optional[int] = None
+    process_id: Optional[int] = None
+    
+    def __str__(self) -> str:
+        return f"RuntimeContext({self.exception_type}, {len(self.stack_trace)} frames)"
+
+
+class RuntimeErrorCollector:
+    """
+    Collects runtime errors during code execution using various Python hooks
+    and integrates with Serena's error analysis capabilities.
+    """
+    
+    def __init__(self, repo_path: str):
+        self.repo_path = Path(repo_path)
+        self.runtime_errors: List[RuntimeError] = []
+        self.error_handlers: List[Callable[[RuntimeError], None]] = []
+        self._lock = threading.RLock()
+        self._original_excepthook: Optional[Callable] = None
+        self._active = False
+        
+        # Error collection settings
+        self.max_errors = 1000
+        self.max_stack_depth = 50
+        self.collect_variables = True
+        self.variable_max_length = 200
+        
+    def start_collection(self) -> None:
+        """Start collecting runtime errors."""
+        if self._active:
+            return
+            
+        try:
+            self._original_excepthook = sys.excepthook
+            sys.excepthook = self._handle_exception
+            self._active = True
+            
+        except Exception as e:
+            print(f"Failed to start runtime error collection: {e}")
+    
+    def stop_collection(self) -> None:
+        """Stop collecting runtime errors."""
+        if not self._active:
+            return
+            
+        try:
+            if self._original_excepthook:
+                sys.excepthook = self._original_excepthook
+            self._active = False
+            
+        except Exception as e:
+            print(f"Failed to stop runtime error collection: {e}")
+    
+    def _handle_exception(self, exc_type: type, exc_value: BaseException, exc_traceback) -> None:
+        """Handle main thread exceptions."""
+        try:
+            self._collect_error(exc_type, exc_value, exc_traceback)
+        except Exception as e:
+            print(f"Error in exception handler: {e}")
+        
+        if self._original_excepthook:
+            self._original_excepthook(exc_type, exc_value, exc_traceback)
+    
+    def _collect_error(self, exc_type: type, exc_value: BaseException, exc_traceback) -> None:
+        """Collect error information from exception."""
+        try:
+            if exc_traceback is None:
+                return
+                
+            import traceback
+            tb_list = traceback.extract_tb(exc_traceback)
+            if not tb_list:
+                return
+            
+            # Find the most relevant frame
+            target_frame = None
+            for frame in tb_list:
+                if self._is_repo_file(frame.filename):
+                    target_frame = frame
+                    break
+            
+            if not target_frame:
+                target_frame = tb_list[-1]
+            
+            # Create runtime error
+            runtime_error = RuntimeError(
+                file_path=str(Path(target_frame.filename).relative_to(self.repo_path)) if self._is_repo_file(target_frame.filename) else target_frame.filename,
+                line=target_frame.lineno or 1,
+                column=0,
+                error_type=exc_type.__name__,
+                error_message=str(exc_value),
+                stack_trace='\n'.join(traceback.format_tb(exc_traceback, limit=self.max_stack_depth)),
+                execution_time=time.time(),
+                context={
+                    'exception_type': exc_type.__name__,
+                    'thread_id': threading.get_ident(),
+                    'process_id': os.getpid()
+                }
+            )
+            
+            with self._lock:
+                self.runtime_errors.append(runtime_error)
+                if len(self.runtime_errors) > self.max_errors:
+                    self.runtime_errors = self.runtime_errors[-self.max_errors:]
+            
+            for handler in self.error_handlers:
+                try:
+                    handler(runtime_error)
+                except Exception as e:
+                    print(f"Error in error handler: {e}")
+                    
+        except Exception as e:
+            print(f"Failed to collect error: {e}")
+    
+    def _is_repo_file(self, file_path: str) -> bool:
+        """Check if file is within the repository."""
+        try:
+            Path(file_path).relative_to(self.repo_path)
+            return True
+        except ValueError:
+            return False
+    
+    def get_runtime_errors(self) -> List[RuntimeError]:
+        """Get all collected runtime errors."""
+        with self._lock:
+            return self.runtime_errors.copy()
+    
+    def clear_runtime_errors(self) -> None:
+        """Clear all collected runtime errors."""
+        with self._lock:
+            self.runtime_errors.clear()
+
+
 class SerenaLSPAnalyzer:
     """
     Comprehensive LSP analyzer for entire codebases using Serena and SolidLSP.
@@ -249,6 +415,7 @@ class SerenaLSPAnalyzer:
         self.project: Optional[Project] = None
         self.language_server: Optional[SolidLanguageServer] = None
         self.server_info: LSPServerInfo = LSPServerInfo()
+        self.runtime_collector: Optional[RuntimeErrorCollector] = None
 
         # Analysis tracking
         self.total_files = 0
@@ -290,6 +457,10 @@ class SerenaLSPAnalyzer:
             self.logger.info(f"⚙️  Configuration: timeout={timeout}s, max_workers={max_workers}")
             if enable_runtime_errors:
                 self.logger.info("🔥 Runtime error collection enabled")
+        
+        # Initialize runtime error collection if enabled
+        if enable_runtime_errors:
+            self._initialize_runtime_collection()
 
     def __enter__(self):
         """Context manager entry."""
@@ -342,6 +513,14 @@ class SerenaLSPAnalyzer:
                 finally:
                     self.language_server = None
 
+            # Stop runtime error collection
+            if self.runtime_collector:
+                try:
+                    self.runtime_collector.stop_collection()
+                    self.logger.info("🔥 Runtime error collection stopped")
+                except Exception as e:
+                    self.logger.warning(f"⚠️  Error stopping runtime collection: {e}")
+
             # Clean up temporary directory
             if self.temp_dir and os.path.exists(self.temp_dir):
                 try:
@@ -366,6 +545,15 @@ class SerenaLSPAnalyzer:
             # Final fallback error handling
             self.logger.error(f"❌ Critical error during cleanup: {e}")
             self.server_info.server_status = "cleanup_failed"
+
+    def _initialize_runtime_collection(self) -> None:
+        """Initialize runtime error collection."""
+        try:
+            # We'll initialize this when we have a repo path
+            self.logger.info("🔥 Runtime error collection will be initialized with repository")
+        except Exception as e:
+            self.logger.error(f"Failed to initialize runtime error collection: {e}")
+            self.enable_runtime_errors = False
 
     def is_git_url(self, path: str) -> bool:
         """Check if the given path is a Git URL."""
@@ -611,26 +799,53 @@ class SerenaLSPAnalyzer:
                 self.language_server = None
                 self.server_info.server_status = "stopped"
 
-    def format_diagnostic_output(self, diagnostics: List[EnhancedDiagnostic]) -> str:
+    def format_diagnostic_output(self, diagnostics: List[EnhancedDiagnostic], include_runtime: bool = True) -> str:
         """Format diagnostics in the requested output format with enhanced categorization."""
-        if not diagnostics:
+        all_diagnostics = diagnostics.copy()
+        
+        # Add runtime errors if available and requested
+        if include_runtime and self.runtime_collector:
+            try:
+                runtime_errors = self.runtime_collector.get_runtime_errors()
+                for runtime_error in runtime_errors:
+                    # Convert RuntimeError to EnhancedDiagnostic
+                    enhanced_diag = EnhancedDiagnostic(
+                        file_path=runtime_error.file_path,
+                        line=runtime_error.line,
+                        column=runtime_error.column,
+                        severity="ERROR",
+                        message=f"[RUNTIME] {runtime_error.error_type}: {runtime_error.error_message}",
+                        code=runtime_error.error_type,
+                        source="runtime",
+                        category="runtime_error",
+                        tags=["runtime_error", "execution_error"]
+                    )
+                    all_diagnostics.append(enhanced_diag)
+            except Exception as e:
+                self.logger.warning(f"⚠️  Error including runtime errors: {e}")
+        
+        if not all_diagnostics:
             return "ERRORS: ['0']\nNo errors found."
 
         # Sort diagnostics by severity (ERROR first), then by file, then by line
         severity_priority = {"ERROR": 0, "WARNING": 1, "INFO": 2, "HINT": 3, "UNKNOWN": 4}
 
-        diagnostics.sort(key=lambda d: (
+        all_diagnostics.sort(key=lambda d: (
             severity_priority.get(d.severity, 5),
             d.file_path.lower(),
             d.line,
         ))
 
-        # Generate output
-        error_count = len(diagnostics)
-        output_lines = [f"ERRORS: ['{error_count}']"]
+        # Generate output with enhanced categorization
+        error_count = len(all_diagnostics)
+        critical_count = len([d for d in all_diagnostics if d.severity == "ERROR"])
+        warning_count = len([d for d in all_diagnostics if d.severity == "WARNING"])
+        runtime_count = len([d for d in all_diagnostics if d.source == "runtime"])
+        
+        output_lines = [f"ERRORS: {error_count} [⚠️ Critical: {critical_count}] [👉 Major: {warning_count}] [🔥 Runtime: {runtime_count}]"]
 
         # Add each formatted diagnostic
-        for i, diag in enumerate(diagnostics, 1):
+        for i, diag in enumerate(all_diagnostics, 1):
             file_name = os.path.basename(diag.file_path)
             location = f"line {diag.line}, col {diag.column}"
 
@@ -660,7 +875,11 @@ class SerenaLSPAnalyzer:
 
             other_types = ", ".join(metadata_parts)
 
-            diagnostic_line = f"{i}. '{location}' '{file_name}' '{clean_message}' '{other_types}'"
+            # Enhanced format matching the requested output
+            severity_icon = "⚠️" if diag.severity == "ERROR" else "👉" if diag.severity == "WARNING" else "🔍"
+            
+            # Format: 1 ⚠️- projectname'/src/codefile1.py / Function - 'examplefunctionname' [error parameters/reason]
+            diagnostic_line = f"{i} {severity_icon}- {diag.file_path} / {location} - '{clean_message}' [{other_types}]"
             output_lines.append(diagnostic_line)
 
         return "\n".join(output_lines)
@@ -724,6 +943,17 @@ class SerenaLSPAnalyzer:
             setup_start = time.time()
             self.logger.info("⚙️  Setting up Serena project...")
             project = self.setup_project(repo_path, language)
+            
+            # Initialize runtime error collection with actual repo path
+            if self.enable_runtime_errors and not self.runtime_collector:
+                try:
+                    self.runtime_collector = RuntimeErrorCollector(repo_path)
+                    self.runtime_collector.start_collection()
+                    self.logger.info("🔥 Runtime error collection started")
+                except Exception as e:
+                    self.logger.warning(f"⚠️  Failed to start runtime error collection: {e}")
+                    self.enable_runtime_errors = False
+            
             self.performance_stats["setup_time"] = time.time() - setup_start
 
             # Step 4: Language server initialization
@@ -976,6 +1206,73 @@ def main():
     except Exception as e:
         print(f"\n❌ Analysis failed: {e}")
         sys.exit(1)
+
+
+# ============================================================================
+# ENHANCED INTEGRATION CLASS
+# ============================================================================
+
+class EnhancedSerenaIntegration:
+    """
+    Enhanced integration class that provides unified access to all Serena capabilities
+    including LSP diagnostics, runtime error collection, and comprehensive analysis.
+    """
+    
+    def __init__(self, repo_path: str, enable_runtime_errors: bool = True):
+        self.repo_path = repo_path
+        self.analyzer = SerenaLSPAnalyzer(
+            verbose=True,
+            enable_runtime_errors=enable_runtime_errors
+        )
+        
+    def get_all_errors(self) -> str:
+        """Get all errors (static and runtime) in the enhanced format."""
+        return self.analyzer.analyze_repository(self.repo_path)
+    
+    def get_runtime_errors(self) -> List[RuntimeError]:
+        """Get only runtime errors."""
+        if self.analyzer.runtime_collector:
+            return self.analyzer.runtime_collector.get_runtime_errors()
+        return []
+    
+    def get_comprehensive_analysis(self) -> Dict[str, Any]:
+        """Get comprehensive analysis of the codebase."""
+        result = self.analyzer.analyze_repository(self.repo_path)
+        
+        runtime_summary = {}
+        if self.analyzer.runtime_collector:
+            runtime_errors = self.analyzer.runtime_collector.get_runtime_errors()
+            runtime_summary = {
+                'total_runtime_errors': len(runtime_errors),
+                'runtime_error_types': list(set(e.error_type for e in runtime_errors)),
+                'files_with_runtime_errors': list(set(e.file_path for e in runtime_errors))
+            }
+        
+        return {
+            'formatted_output': result,
+            'runtime_summary': runtime_summary,
+            'performance_stats': self.analyzer.performance_stats
+        }
+    
+    def clear_runtime_errors(self) -> None:
+        """Clear all runtime errors."""
+        if self.analyzer.runtime_collector:
+            self.analyzer.runtime_collector.clear_runtime_errors()
+    
+    def shutdown(self) -> None:
+        """Shutdown the integration."""
+        self.analyzer.cleanup()
+
+
+def create_enhanced_serena_integration(repo_path: str, enable_runtime_errors: bool = True) -> EnhancedSerenaIntegration:
+    """Create an enhanced Serena integration for a repository."""
+    return EnhancedSerenaIntegration(repo_path, enable_runtime_errors)
+
+
+def get_comprehensive_errors(repo_path: str, include_runtime: bool = True) -> str:
+    """Get comprehensive error analysis for a repository."""
+    with SerenaLSPAnalyzer(verbose=True, enable_runtime_errors=include_runtime) as analyzer:
+        return analyzer.analyze_repository(repo_path)
 
 
 if __name__ == "__main__":
