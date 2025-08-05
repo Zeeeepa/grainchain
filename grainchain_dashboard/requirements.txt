@@ -1,5 +1,6 @@
 # Core dependencies
 reflex>=0.8.0
+grainchain
 
 # Database dependencies
 sqlalchemy>=2.0.0
