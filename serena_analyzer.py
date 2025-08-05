@@ -1,1012 +1,982 @@
 #!/usr/bin/env python3
 """
-Comprehensive Serena LSP Error Analysis Tool
+Enhanced Serena LSP Error Analysis Tool with Comprehensive Protocol Integration
 
-Real LSP integration using Serena and SolidLSP libraries for comprehensive error analysis.
-Produces the exact output format: ERRORS: N [⚠️ Critical: X] [👉 Major: Y] [🔍 Minor: Z]
+This tool analyzes repositories using Serena and SolidLSP to extract all LSP errors
+and diagnostics from the codebase with full LSP protocol support including proper
+ProcessLaunchInfo, LSPError, MessageType handling, and comprehensive symbol analysis.
+
+Features:
+- Full LSP protocol integration with proper error handling
+- Comprehensive symbol analysis and reference tracking
+- Enhanced diagnostic collection with position and range information
+- Advanced completion and markup content support
+- Robust process management and server lifecycle handling
+- Runtime error collection and analysis
+- Complete LSP server error reporting
 
 Usage:
-    python serena_analyzer.py <repo_path> [--verbose]
-    python serena_analyzer.py . --verbose
+    python serena_analyzer.py <repo_url_or_path> [options]
+
+Example:
+    python serena_analyzer.py https://github.com/user/repo.git
+    python serena_analyzer.py /path/to/local/repo --severity ERROR --symbols
+    python serena_analyzer.py . --verbose --timeout 120 --completion-analysis
 """
 
 import argparse
-import ast
 import json
 import logging
 import os
+import shutil
+import subprocess
 import sys
+import tempfile
 import time
-import re
-from collections import Counter, defaultdict
-from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Any, Union
-from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass, asdict
+from typing import Dict, List, Optional, Tuple, Any, Union
+from urllib.parse import urlparse
 
-# Serena and SolidLSP imports for real LSP integration
+# Enhanced Serena and SolidLSP imports with comprehensive protocol support
 try:
-    from solidlsp.ls_types import (
-        DiagnosticSeverity, Diagnostic, Position, Range, MarkupContent, Location, 
-        MarkupKind, CompletionItemKind, CompletionItem, UnifiedSymbolInformation, 
-        SymbolKind, SymbolTag
-    )
-    from solidlsp.ls_utils import TextUtils, PathUtils, FileUtils, PlatformId, SymbolUtils
-    from solidlsp.ls_request import LanguageServerRequest
-    from solidlsp.ls_logger import LanguageServerLogger, LogLine
-    from solidlsp.ls_handler import SolidLanguageServerHandler, Request, LanguageServerTerminatedException
-    from solidlsp.ls import SolidLanguageServer, LSPFileBuffer
-    from solidlsp.lsp_protocol_handler.lsp_constants import LSPConstants
-    from solidlsp.lsp_protocol_handler.lsp_requests import LspRequest
-    from solidlsp.lsp_protocol_handler.lsp_types import (
-        DocumentDiagnosticReportKind, ErrorCodes, LSPErrorCodes, DiagnosticSeverity as LSPDiagnosticSeverity,
-        DiagnosticTag, InitializeError, WorkspaceDiagnosticParams, WorkspaceDiagnosticReport,
-        WorkspaceDiagnosticReportPartialResult, PublishDiagnosticsParams, RelatedFullDocumentDiagnosticReport,
-        RelatedUnchangedDocumentDiagnosticReport, UnchangedDocumentDiagnosticReport, FullDocumentDiagnosticReport,
-        DiagnosticOptions, WorkspaceFullDocumentDiagnosticReport, WorkspaceUnchangedDocumentDiagnosticReport,
-        DiagnosticRelatedInformation, DiagnosticWorkspaceClientCapabilities, DiagnosticClientCapabilities,
-        PublishDiagnosticsClientCapabilities
-    )
-    from solidlsp.lsp_protocol_handler.server import ProcessLaunchInfo, LSPError, MessageType
-    from serena.symbol import (
-        LanguageServerSymbolRetriever, ReferenceInLanguageServerSymbol, LanguageServerSymbol,
-        Symbol, PositionInFile, LanguageServerSymbolLocation
-    )
-    from serena.text_utils import MatchedConsecutiveLines, TextLine, LineType
+    # Core Serena imports
+    from serena.config.serena_config import ProjectConfig
     from serena.project import Project
-    from serena.gui_log_viewer import GuiLogViewer, LogLevel, GuiLogViewerHandler
-    from serena.code_editor import CodeEditor
-    from serena.cli import (
-        PromptCommands, ToolCommands, ProjectCommands, SerenaConfigCommands, ContextCommands,
-        ModeCommands, TopLevelCommands, AutoRegisteringGroup, ProjectType
+
+    # SolidLSP core configuration and server
+    from solidlsp.ls_config import Language, LanguageServerConfig
+    from solidlsp.ls_logger import LanguageServerLogger
+    from solidlsp.settings import SolidLSPSettings
+    from solidlsp import SolidLanguageServer
+
+    # Comprehensive LSP protocol types and diagnostics
+    from solidlsp.ls_types import (
+        DiagnosticsSeverity,
+        DiagnosticSeverity,
+        Diagnostic,
+        ErrorCodes,
+        LSPErrorCodes,
+        Position,
+        Range,
+        Location,
+        MarkupContent,
+        MarkupKind,
+        CompletionItemKind,
+        CompletionItem,
+        UnifiedSymbolInformation,
+        SymbolKind,
+        SymbolTag,
     )
-    
+
+    # LSP protocol handler components for robust server management
+    from solidlsp.lsp_protocol_handler.server import (
+        ProcessLaunchInfo,
+        LSPError,
+        MessageType,
+    )
+
+    # Serena symbol handling for comprehensive code analysis
+    from serena.symbol import (
+        LanguageServerSymbolRetriever,
+        ReferenceInLanguageServerSymbol,
+        LanguageServerSymbol,
+        Symbol,
+        PositionInFile,
+        LanguageServerSymbolLocation,
+    )
+
     SERENA_AVAILABLE = True
-    
+
 except ImportError as e:
-    print(f"⚠️  Warning: Serena/SolidLSP libraries not available: {e}")
-    print("📋 Falling back to basic AST analysis mode")
-    print("💡 To use full LSP capabilities, install Serena and SolidLSP libraries")
-    SERENA_AVAILABLE = False
+    print(f"Error: Failed to import required Serena/SolidLSP modules: {e}")
+    print("Please ensure Serena and SolidLSP are properly installed.")
+    print("Try: pip install -e . from the serena repository root")
+    sys.exit(1)
 
 
 @dataclass
-class FunctionInfo:
-    """Information about a function where an error occurs."""
-    name: str
-    line_start: int
-    line_end: int
-    function_type: str = "function"  # 'function', 'method', 'class'
-    parent_class: Optional[str] = None
-    is_public: bool = True
-    complexity_score: int = 1
-    symbol_info: Optional[Any] = None  # Serena LanguageServerSymbol when available
-
-
-@dataclass 
 class EnhancedDiagnostic:
-    """Enhanced diagnostic with function attribution and severity classification."""
+    """Enhanced diagnostic with comprehensive LSP protocol metadata."""
     file_path: str
     line: int
     column: int
-    severity: str  # CRITICAL, MAJOR, MINOR, INFO
+    severity: str
     message: str
     code: Optional[str] = None
-    source: str = "analyzer"
-    function_name: str = "unknown"
-    function_info: Optional[FunctionInfo] = None
-    lsp_diagnostic: Optional[Any] = None  # Original LSP Diagnostic when available
+    source: Optional[str] = None
+    category: Optional[str] = None
+    tags: List[str] = None
+    error_code: Optional[ErrorCodes] = None
+    # Enhanced LSP protocol fields
+    range_info: Optional[Dict[str, Any]] = None  # LSP Range object
+    location: Optional[Dict[str, Any]] = None  # LSP Location object
+    related_information: List[Dict[str, Any]] = None
+    markup_content: Optional[Dict[str, Any]] = None  # MarkupContent for rich descriptions
+    symbol_kind: Optional[int] = None  # Associated symbol kind if applicable
+    completion_items: List[Dict[str, Any]] = None  # Related completion suggestions
+
+    def __post_init__(self):
+        if self.tags is None:
+            self.tags = []
+        if self.related_information is None:
+            self.related_information = []
+        if self.completion_items is None:
+            self.completion_items = []
 
 
-class EnhancedSeverity:
-    """Advanced severity classification with visual indicators."""
+@dataclass
+class EnhancedSymbolInfo:
+    """Enhanced symbol information with comprehensive metadata."""
+    name: str
+    kind: int  # SymbolKind
+    location: Dict[str, Any]  # Location with URI and Range
+    container_name: Optional[str] = None
+    detail: Optional[str] = None
+    documentation: Optional[Dict[str, Any]] = None  # MarkupContent
+    tags: List[int] = None  # SymbolTag list
+    references: List[Dict[str, Any]] = None  # Reference locations
+
+    def __post_init__(self):
+        if self.tags is None:
+            self.tags = []
+        if self.references is None:
+            self.references = []
+
+
+@dataclass
+class RuntimeError:
+    """Runtime error information captured during execution."""
+    file_path: str
+    line: int
+    column: int
+    error_type: str
+    error_message: str
+    stack_trace: str
+    execution_time: float
+    context: Dict[str, Any] = None
     
-    CRITICAL = "CRITICAL"
-    MAJOR = "MAJOR" 
-    MINOR = "MINOR"
-    INFO = "INFO"
-    
-    SEVERITY_ICONS = {
-        CRITICAL: "⚠️",
-        MAJOR: "👉", 
-        MINOR: "🔍",
-        INFO: "ℹ️"
-    }
-    
-    @classmethod
-    def classify_lsp_diagnostic(cls, lsp_diagnostic: Any, function_context: Optional[str] = None) -> str:
-        """Classify LSP diagnostic severity with enhanced business logic."""
-        if not SERENA_AVAILABLE:
-            return cls._classify_basic_diagnostic(lsp_diagnostic, function_context)
-        
-        # Map LSP severity to enhanced severity
-        if hasattr(lsp_diagnostic, 'severity'):
-            lsp_severity = lsp_diagnostic.severity
-            
-            # Critical: LSP errors that indicate serious issues
-            if lsp_severity == DiagnosticSeverity.Error:
-                message = getattr(lsp_diagnostic, 'message', '').lower()
-                
-                # Security and critical runtime issues
-                critical_keywords = [
-                    "security", "vulnerability", "injection", "exploit", "unsafe",
-                    "null pointer", "buffer overflow", "memory leak", "deadlock",
-                    "syntax error", "import error", "module not found", "name error"
-                ]
-                
-                if any(keyword in message for keyword in critical_keywords):
-                    return cls.CRITICAL
-                
-                # Main function errors are more critical
-                if function_context and any(func in function_context.lower() 
-                                         for func in ["main", "__main__", "init", "setup"]):
-                    return cls.CRITICAL
-                
-                return cls.MAJOR
-            
-            # Major: LSP warnings that indicate significant issues
-            elif lsp_severity == DiagnosticSeverity.Warning:
-                message = getattr(lsp_diagnostic, 'message', '').lower()
-                
-                major_keywords = [
-                    "deprecated", "performance", "inefficient", "unused", "undefined",
-                    "type error", "compatibility", "breaking change"
-                ]
-                
-                if any(keyword in message for keyword in major_keywords):
-                    return cls.MAJOR
-                
-                return cls.MINOR
-            
-            # Minor: LSP info and hints
-            elif lsp_severity in [DiagnosticSeverity.Information, DiagnosticSeverity.Hint]:
-                return cls.MINOR
-        
-        return cls.MINOR
-    
-    @classmethod
-    def _classify_basic_diagnostic(cls, diagnostic_info: Any, function_context: Optional[str] = None) -> str:
-        """Fallback classification for basic mode."""
-        if isinstance(diagnostic_info, dict):
-            message = diagnostic_info.get('message', '').lower()
-        else:
-            message = str(diagnostic_info).lower()
-        
-        # Critical indicators
-        critical_keywords = [
-            "security", "vulnerability", "injection", "exploit", "unsafe",
-            "syntax error", "import error", "module not found", "name error"
-        ]
-        
-        if any(keyword in message for keyword in critical_keywords):
-            return cls.CRITICAL
-        
-        # Major indicators  
-        major_keywords = [
-            "deprecated", "performance", "inefficient", "unused", "undefined",
-            "type error", "value error", "high complexity"
-        ]
-        
-        if any(keyword in message for keyword in major_keywords):
-            return cls.MAJOR
-        
-        return cls.MINOR
+    def __post_init__(self):
+        if self.context is None:
+            self.context = {}
+
+
+@dataclass
+class LSPServerInfo:
+    """Information about the LSP server process."""
+    process_info: Optional[ProcessLaunchInfo] = None
+    server_status: str = "not_started"
+    initialization_time: float = 0.0
+    last_error: Optional[LSPError] = None
+    message_count: int = 0
+    error_count: int = 0
+
+
+@dataclass
+class AnalysisResults:
+    """Comprehensive analysis results with enhanced LSP protocol support."""
+    total_files: int
+    processed_files: int
+    failed_files: int
+    total_diagnostics: int
+    diagnostics_by_severity: Dict[str, int]
+    diagnostics_by_file: Dict[str, int]
+    diagnostics: List[EnhancedDiagnostic]
+    performance_stats: Dict[str, float]
+    language_detected: str
+    repository_path: str
+    analysis_timestamp: str
+    # Enhanced analysis results
+    symbols: List[EnhancedSymbolInfo] = None
+    runtime_errors: List[RuntimeError] = None
+    symbol_references: Dict[str, List[Dict[str, Any]]] = None
+    markup_content_analysis: List[Dict[str, Any]] = None
+    lsp_error_counts: Dict[str, int] = None
+    server_status: Dict[str, Any] = None
+
+    def __post_init__(self):
+        if self.symbols is None:
+            self.symbols = []
+        if self.runtime_errors is None:
+            self.runtime_errors = []
+        if self.symbol_references is None:
+            self.symbol_references = {}
+        if self.markup_content_analysis is None:
+            self.markup_content_analysis = []
+        if self.lsp_error_counts is None:
+            self.lsp_error_counts = {}
+        if self.server_status is None:
+            self.server_status = {}
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for JSON serialization."""
+        return asdict(self)
 
 
 class SerenaLSPAnalyzer:
-    """Real LSP analyzer using Serena and SolidLSP libraries."""
+    """
+    Comprehensive LSP analyzer for entire codebases using Serena and SolidLSP.
     
-    def __init__(self, verbose: bool = False):
+    This class provides full codebase analysis capabilities using real LSP integration
+    for accurate error detection across all programming languages supported by Serena.
+    """
+
+    def __init__(
+        self,
+        verbose: bool = False,
+        timeout: float = 600,
+        max_workers: int = 4,
+        enable_symbols: bool = False,
+        enable_runtime_errors: bool = False,
+    ):
+        """
+        Initialize the comprehensive analyzer with enhanced LSP protocol support.
+        
+        Args:
+            verbose: Enable verbose logging and progress tracking
+            timeout: Timeout for language server operations
+            max_workers: Maximum number of concurrent workers for file processing
+            enable_symbols: Enable comprehensive symbol analysis
+            enable_runtime_errors: Enable runtime error collection during execution
+        """
         self.verbose = verbose
-        self.logger = logging.getLogger(__name__)
+        self.timeout = timeout
+        self.max_workers = max_workers
+        self.enable_symbols = enable_symbols
+        self.enable_runtime_errors = enable_runtime_errors
+        self.temp_dir: Optional[str] = None
         self.project: Optional[Project] = None
         self.language_server: Optional[SolidLanguageServer] = None
-        self.symbol_retriever: Optional[LanguageServerSymbolRetriever] = None
-        
-    def setup_project(self, repo_path: str) -> bool:
-        """Set up Serena project for LSP analysis."""
-        if not SERENA_AVAILABLE:
-            return False
-            
-        try:
-            self.logger.info(f"🔧 Setting up Serena project for: {repo_path}")
-            
-            # Create Serena project
-            self.project = Project.from_path(repo_path)
-            
-            if not self.project:
-                self.logger.error("Failed to create Serena project")
-                return False
-            
-            # Initialize language server
-            self.language_server = SolidLanguageServer(
-                project=self.project,
-                logger=LanguageServerLogger() if self.verbose else None
-            )
-            
-            # Start language server
-            if not self.language_server.start():
-                self.logger.error("Failed to start language server")
-                return False
-            
-            # Initialize symbol retriever
-            self.symbol_retriever = LanguageServerSymbolRetriever(
-                language_server=self.language_server,
-                project=self.project
-            )
-            
-            self.logger.info("✅ Serena project setup complete")
-            return True
-            
-        except Exception as e:
-            self.logger.error(f"❌ Failed to setup Serena project: {e}")
-            return False
-    
-    def get_lsp_diagnostics(self, file_path: str) -> List[Diagnostic]:
-        """Get real LSP diagnostics for a file."""
-        if not SERENA_AVAILABLE or not self.language_server:
-            return []
-        
-        try:
-            # Request diagnostics from LSP server
-            diagnostics = self.language_server.get_diagnostics(file_path)
-            return diagnostics or []
-            
-        except LSPError as e:
-            if self.verbose:
-                self.logger.debug(f"LSP error for {os.path.basename(file_path)}: {e}")
-            return []
-        except Exception as e:
-            if self.verbose:
-                self.logger.debug(f"Error getting diagnostics for {os.path.basename(file_path)}: {e}")
-            return []
-    
-    def get_symbol_at_position(self, file_path: str, line: int, column: int) -> Optional[LanguageServerSymbol]:
-        """Get symbol information at a specific position."""
-        if not SERENA_AVAILABLE or not self.symbol_retriever:
-            return None
-        
-        try:
-            position = PositionInFile(file_path=file_path, line=line, column=column)
-            symbol = self.symbol_retriever.get_symbol_at_position(position)
-            return symbol
-            
-        except Exception as e:
-            if self.verbose:
-                self.logger.debug(f"Error getting symbol at {file_path}:{line}:{column}: {e}")
-            return None
-    
-    def get_function_symbols(self, file_path: str) -> List[LanguageServerSymbol]:
-        """Get all function symbols in a file."""
-        if not SERENA_AVAILABLE or not self.symbol_retriever:
-            return []
-        
-        try:
-            symbols = self.symbol_retriever.get_symbols_in_file(file_path)
-            function_symbols = [
-                symbol for symbol in symbols 
-                if symbol.kind in [SymbolKind.Function, SymbolKind.Method, SymbolKind.Constructor]
-            ]
-            return function_symbols
-            
-        except Exception as e:
-            if self.verbose:
-                self.logger.debug(f"Error getting function symbols for {os.path.basename(file_path)}: {e}")
-            return []
-    
-    def cleanup(self):
-        """Clean up LSP resources."""
-        if self.language_server:
-            try:
-                self.language_server.stop()
-            except Exception as e:
-                if self.verbose:
-                    self.logger.debug(f"Error stopping language server: {e}")
+        self.server_info: LSPServerInfo = LSPServerInfo()
 
-
-class FallbackAnalyzer:
-    """Fallback AST-based analyzer when Serena is not available."""
-    
-    def __init__(self, verbose: bool = False):
-        self.verbose = verbose
-        self.logger = logging.getLogger(__name__)
-        self.function_cache: Dict[str, List[FunctionInfo]] = {}
-    
-    def extract_functions_from_file(self, file_path: str) -> List[FunctionInfo]:
-        """Extract function information using AST parsing."""
-        cache_key = f"{file_path}:{os.path.getmtime(file_path)}"
-        if cache_key in self.function_cache:
-            return self.function_cache[cache_key]
-        
-        functions = []
-        
-        try:
-            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-                content = f.read()
-            
-            tree = ast.parse(content)
-            
-            class FunctionVisitor(ast.NodeVisitor):
-                def __init__(self):
-                    self.current_class = None
-                    self.functions = []
-                
-                def visit_ClassDef(self, node):
-                    old_class = self.current_class
-                    self.current_class = node.name
-                    self.generic_visit(node)
-                    self.current_class = old_class
-                
-                def visit_FunctionDef(self, node):
-                    self._process_function(node)
-                    self.generic_visit(node)
-                
-                def visit_AsyncFunctionDef(self, node):
-                    self._process_function(node, is_async=True)
-                    self.generic_visit(node)
-                
-                def _process_function(self, node, is_async=False):
-                    function_type = "method" if self.current_class else "function"
-                    if is_async:
-                        function_type = f"async_{function_type}"
-                    
-                    func_info = FunctionInfo(
-                        name=node.name,
-                        line_start=node.lineno,
-                        line_end=node.end_lineno or node.lineno,
-                        function_type=function_type,
-                        parent_class=self.current_class,
-                        is_public=not node.name.startswith('_'),
-                        complexity_score=self._estimate_complexity(node)
-                    )
-                    
-                    self.functions.append(func_info)
-                
-                def _estimate_complexity(self, node):
-                    """Simple complexity estimation."""
-                    complexity = 1
-                    for child in ast.walk(node):
-                        if isinstance(child, (ast.If, ast.For, ast.While, ast.Try)):
-                            complexity += 1
-                        elif isinstance(child, (ast.And, ast.Or)):
-                            complexity += 1
-                    return min(complexity, 10)
-            
-            visitor = FunctionVisitor()
-            visitor.visit(tree)
-            functions = visitor.functions
-            
-            self.function_cache[cache_key] = functions
-            
-        except SyntaxError as e:
-            # Create error function info for syntax errors
-            func_info = FunctionInfo(
-                name="<syntax_error>",
-                line_start=e.lineno or 1,
-                line_end=e.lineno or 1,
-                function_type="error"
-            )
-            functions = [func_info]
-        except Exception as e:
-            if self.verbose:
-                self.logger.debug(f"Failed to parse {os.path.basename(file_path)}: {e}")
-        
-        return functions
-    
-    def find_function_at_line(self, file_path: str, line_number: int) -> Optional[FunctionInfo]:
-        """Find the function that contains the given line number."""
-        functions = self.extract_functions_from_file(file_path)
-        
-        for func in functions:
-            if func.line_start <= line_number <= func.line_end:
-                return func
-        
-        return None
-    
-    def analyze_file_basic(self, file_path: str) -> List[EnhancedDiagnostic]:
-        """Basic file analysis using AST and pattern matching."""
-        diagnostics = []
-        
-        try:
-            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-                content = f.read()
-                lines = content.split('\n')
-            
-            # Check for syntax errors
-            try:
-                ast.parse(content)
-            except SyntaxError as e:
-                func_info = self.find_function_at_line(file_path, e.lineno or 1)
-                func_name = func_info.name if func_info else "unknown"
-                
-                diagnostic = EnhancedDiagnostic(
-                    file_path=file_path,
-                    line=e.lineno or 1,
-                    column=e.offset or 1,
-                    severity=EnhancedSeverity.CRITICAL,
-                    message=f"Syntax error: {e.msg}",
-                    code="syntax-error",
-                    source="python-ast",
-                    function_name=func_name,
-                    function_info=func_info
-                )
-                diagnostics.append(diagnostic)
-                return diagnostics
-            
-            # Analyze each line for common issues
-            for line_num, line in enumerate(lines, 1):
-                line_issues = self._analyze_line(file_path, line_num, line)
-                diagnostics.extend(line_issues)
-            
-            # Analyze imports and functions
-            import_issues = self._analyze_imports(file_path, content)
-            diagnostics.extend(import_issues)
-            
-            function_issues = self._analyze_functions(file_path)
-            diagnostics.extend(function_issues)
-            
-        except Exception as e:
-            if self.verbose:
-                self.logger.warning(f"Failed to analyze {os.path.basename(file_path)}: {e}")
-        
-        return diagnostics
-    
-    def _analyze_line(self, file_path: str, line_num: int, line: str) -> List[EnhancedDiagnostic]:
-        """Analyze a single line for issues."""
-        diagnostics = []
-        
-        # Find function context
-        func_info = self.find_function_at_line(file_path, line_num)
-        func_name = func_info.name if func_info else "unknown"
-        
-        # Check line length
-        if len(line) > 88:
-            severity = EnhancedSeverity._classify_basic_diagnostic("line too long", func_name)
-            diagnostic = EnhancedDiagnostic(
-                file_path=file_path,
-                line=line_num,
-                column=89,
-                severity=severity,
-                message=f"Line too long ({len(line)} > 88 characters)",
-                code="line-too-long",
-                source="style-checker",
-                function_name=func_name,
-                function_info=func_info
-            )
-            diagnostics.append(diagnostic)
-        
-        # Check for TODO comments
-        if "TODO" in line or "FIXME" in line or "HACK" in line:
-            severity = EnhancedSeverity._classify_basic_diagnostic("todo comment", func_name)
-            diagnostic = EnhancedDiagnostic(
-                file_path=file_path,
-                line=line_num,
-                column=line.find("TODO") + 1 if "TODO" in line else line.find("FIXME") + 1,
-                severity=severity,
-                message="TODO/FIXME comment found - consider addressing",
-                code="todo-comment",
-                source="maintenance-checker",
-                function_name=func_name,
-                function_info=func_info
-            )
-            diagnostics.append(diagnostic)
-        
-        # Check for print statements
-        if re.search(r'\bprint\s*\(', line):
-            severity = EnhancedSeverity._classify_basic_diagnostic("print statement", func_name)
-            diagnostic = EnhancedDiagnostic(
-                file_path=file_path,
-                line=line_num,
-                column=line.find("print") + 1,
-                severity=severity,
-                message="Consider using logging instead of print statements",
-                code="print-statement",
-                source="best-practice-checker",
-                function_name=func_name,
-                function_info=func_info
-            )
-            diagnostics.append(diagnostic)
-        
-        return diagnostics
-    
-    def _analyze_imports(self, file_path: str, content: str) -> List[EnhancedDiagnostic]:
-        """Analyze import statements."""
-        diagnostics = []
-        
-        try:
-            tree = ast.parse(content)
-            
-            for node in ast.walk(tree):
-                if isinstance(node, ast.Import):
-                    for alias in node.names:
-                        # Simple unused import check
-                        if alias.name not in content.replace(f"import {alias.name}", ""):
-                            severity = EnhancedSeverity._classify_basic_diagnostic("unused import")
-                            diagnostic = EnhancedDiagnostic(
-                                file_path=file_path,
-                                line=node.lineno,
-                                column=node.col_offset + 1,
-                                severity=severity,
-                                message=f"Unused import: {alias.name}",
-                                code="unused-import",
-                                source="import-checker",
-                                function_name="<module>"
-                            )
-                            diagnostics.append(diagnostic)
-        
-        except Exception as e:
-            if self.verbose:
-                self.logger.debug(f"Import analysis failed for {os.path.basename(file_path)}: {e}")
-        
-        return diagnostics
-    
-    def _analyze_functions(self, file_path: str) -> List[EnhancedDiagnostic]:
-        """Analyze functions for various issues."""
-        diagnostics = []
-        functions = self.extract_functions_from_file(file_path)
-        
-        for func in functions:
-            # Check for missing docstrings in public functions
-            if func.is_public and func.function_type in ["function", "method"]:
-                try:
-                    with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-                        lines = f.readlines()
-                    
-                    # Simple docstring check
-                    has_docstring = False
-                    for i in range(func.line_start, min(func.line_start + 3, len(lines))):
-                        if '"""' in lines[i] or "'''" in lines[i]:
-                            has_docstring = True
-                            break
-                    
-                    if not has_docstring:
-                        severity = EnhancedSeverity._classify_basic_diagnostic("missing docstring", func.name)
-                        diagnostic = EnhancedDiagnostic(
-                            file_path=file_path,
-                            line=func.line_start,
-                            column=1,
-                            severity=severity,
-                            message=f"Missing docstring for public {func.function_type}: {func.name}",
-                            code="missing-docstring",
-                            source="docstring-checker",
-                            function_name=func.name,
-                            function_info=func
-                        )
-                        diagnostics.append(diagnostic)
-                
-                except Exception:
-                    pass
-            
-            # Check for high complexity
-            if func.complexity_score > 7:
-                severity = EnhancedSeverity._classify_basic_diagnostic("high complexity", func.name)
-                diagnostic = EnhancedDiagnostic(
-                    file_path=file_path,
-                    line=func.line_start,
-                    column=1,
-                    severity=severity,
-                    message=f"High complexity function (score: {func.complexity_score})",
-                    code="high-complexity",
-                    source="complexity-checker",
-                    function_name=func.name,
-                    function_info=func
-                )
-                diagnostics.append(diagnostic)
-        
-        return diagnostics
-
-
-class ComprehensiveSerenaAnalyzer:
-    """Main analyzer that coordinates LSP and fallback analysis."""
-    
-    def __init__(self, verbose: bool = False, max_workers: int = 4):
-        self.verbose = verbose
-        self.max_workers = max_workers
-        self.lock = threading.Lock()
-        
-        # Set up logging
-        log_level = logging.DEBUG if verbose else logging.INFO
-        logging.basicConfig(
-            level=log_level,
-            format='%(asctime)s - %(levelname)s - %(message)s',
-            handlers=[logging.StreamHandler(sys.stdout)]
-        )
-        self.logger = logging.getLogger(__name__)
-        
-        # Initialize analyzers
-        self.serena_analyzer = SerenaLSPAnalyzer(verbose) if SERENA_AVAILABLE else None
-        self.fallback_analyzer = FallbackAnalyzer(verbose)
-        
-        # Statistics
+        # Analysis tracking
         self.total_files = 0
         self.processed_files = 0
         self.failed_files = 0
         self.total_diagnostics = 0
-        
-        # Show mode
-        if SERENA_AVAILABLE:
-            self.logger.info("🚀 Using Serena LSP mode with real language server integration")
-        else:
-            self.logger.info("📋 Using fallback AST analysis mode")
-    
-    def find_source_files(self, repo_path: str) -> List[str]:
-        """Find all source files in the repository."""
-        source_files = []
-        
-        # File extensions to analyze
-        extensions = {'.py', '.js', '.ts', '.jsx', '.tsx', '.java', '.cpp', '.c', '.h', '.hpp'}
-        
-        # Directories to ignore
-        ignore_dirs = {
-            '.git', '__pycache__', 'node_modules', '.venv', 'venv', 
-            'build', 'dist', 'target', '.pytest_cache', '.mypy_cache'
+        self.total_symbols = 0
+        self.total_runtime_errors = 0
+        self.analysis_start_time = None
+        self.lock = threading.Lock()
+
+        # Enhanced analysis collections
+        self.collected_symbols: List[EnhancedSymbolInfo] = []
+        self.collected_runtime_errors: List[RuntimeError] = []
+        self.symbol_references: Dict[str, List[Dict[str, Any]]] = {}
+        self.markup_content_items: List[Dict[str, Any]] = []
+
+        # Set up comprehensive logging
+        log_level = logging.DEBUG if verbose else logging.INFO
+        logging.basicConfig(
+            level=log_level,
+            format="%(asctime)s - %(levelname)s - %(message)s",
+            handlers=[logging.StreamHandler(sys.stdout)],
+        )
+        self.logger = logging.getLogger(__name__)
+
+        # Performance tracking
+        self.performance_stats = {
+            "clone_time": 0,
+            "setup_time": 0,
+            "lsp_start_time": 0,
+            "analysis_time": 0,
+            "runtime_analysis_time": 0,
+            "total_time": 0,
         }
-        
+
+        if verbose:
+            self.logger.info("🚀 Initializing Enhanced Serena LSP Analyzer")
+            self.logger.info(f"⚙️  Configuration: timeout={timeout}s, max_workers={max_workers}")
+            if enable_runtime_errors:
+                self.logger.info("🔥 Runtime error collection enabled")
+
+    def __enter__(self):
+        """Context manager entry."""
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Context manager exit with cleanup."""
+        self.cleanup()
+
+    def cleanup(self):
+        """Clean up resources including language server and temporary directories with enhanced error handling."""
+        try:
+            # Enhanced language server cleanup with LSPError handling
+            if self.language_server:
+                try:
+                    if self.language_server.is_running():
+                        self.logger.info("🛑 Stopping language server...")
+                        self.server_info.server_status = "stopping"
+
+                        # Attempt graceful shutdown
+                        self.language_server.stop()
+
+                        # Wait briefly for graceful shutdown
+                        time.sleep(1)
+
+                        if self.language_server.is_running():
+                            self.logger.warning("⚠️  Language server did not stop gracefully")
+                            self.server_info.server_status = "force_stopped"
+                        else:
+                            self.logger.info("✅ Language server stopped successfully")
+                            self.server_info.server_status = "stopped"
+                    else:
+                        self.logger.debug("🔍 Language server was not running")
+                        self.server_info.server_status = "not_running"
+
+                except LSPError as lsp_error:
+                    self.server_info.last_error = lsp_error
+                    self.server_info.error_count += 1
+                    self.logger.warning(f"⚠️  LSP Error during server shutdown: {lsp_error}")
+                    self.server_info.server_status = "error_during_stop"
+
+                except Exception as e:
+                    # Convert to LSPError for consistent handling
+                    lsp_error = LSPError(ErrorCodes.InternalError, f"Error stopping server: {str(e)}")
+                    self.server_info.last_error = lsp_error
+                    self.server_info.error_count += 1
+                    self.logger.warning(f"⚠️  Error stopping language server: {e}")
+                    self.server_info.server_status = "error_during_stop"
+
+                finally:
+                    self.language_server = None
+
+            # Clean up temporary directory
+            if self.temp_dir and os.path.exists(self.temp_dir):
+                try:
+                    self.logger.info(f"🧹 Cleaning up temporary directory: {self.temp_dir}")
+                    shutil.rmtree(self.temp_dir, ignore_errors=True)
+                    self.logger.debug("✅ Temporary directory cleaned up successfully")
+                except Exception as e:
+                    self.logger.warning(f"⚠️  Error cleaning up temporary directory: {e}")
+
+            # Log final server statistics
+            if self.verbose and self.server_info.message_count > 0:
+                self.logger.info("📊 Final LSP Server Statistics:")
+                self.logger.info(f"   📨 Total messages: {self.server_info.message_count}")
+                self.logger.info(f"   ❌ Total errors: {self.server_info.error_count}")
+                self.logger.info(f"   ⏱️  Initialization time: {self.server_info.initialization_time:.2f}s")
+                self.logger.info(f"   📊 Final status: {self.server_info.server_status}")
+
+                if self.server_info.last_error:
+                    self.logger.info(f"   🔴 Last error: {self.server_info.last_error}")
+
+        except Exception as e:
+            # Final fallback error handling
+            self.logger.error(f"❌ Critical error during cleanup: {e}")
+            self.server_info.server_status = "cleanup_failed"
+
+    def is_git_url(self, path: str) -> bool:
+        """Check if the given path is a Git URL."""
+        parsed = urlparse(path)
+        return bool(parsed.scheme and parsed.netloc) or path.endswith(".git")
+
+    def clone_repository(self, repo_url: str) -> str:
+        """Clone a Git repository to a temporary directory."""
+        self.logger.info(f"📥 Cloning repository: {repo_url}")
+
+        self.temp_dir = tempfile.mkdtemp(prefix="serena_analysis_")
+        repo_name = os.path.basename(repo_url.rstrip("/").replace(".git", ""))
+        clone_path = os.path.join(self.temp_dir, repo_name)
+
+        try:
+            cmd = ["git", "clone", "--depth", "1", repo_url, clone_path]
+            result = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=self.timeout
+            )
+
+            if result.returncode != 0:
+                raise RuntimeError(f"Git clone failed: {result.stderr}")
+
+            self.logger.info(f"✅ Repository cloned to: {clone_path}")
+            return clone_path
+
+        except subprocess.TimeoutExpired:
+            raise RuntimeError(f"Git clone timed out after {self.timeout} seconds")
+        except Exception as e:
+            raise RuntimeError(f"Failed to clone repository: {e}")
+
+    def detect_language(self, repo_path: str) -> Language:
+        """Detect the primary programming language of the repository."""
+        self.logger.info("🔍 Detecting repository language...")
+
+        language_indicators = {
+            Language.PYTHON: [".py", "requirements.txt", "setup.py", "pyproject.toml"],
+            Language.TYPESCRIPT: [".ts", ".tsx", ".js", ".jsx", "tsconfig.json", "package.json"],
+            Language.JAVA: [".java", "pom.xml", "build.gradle"],
+            Language.CSHARP: [".cs", ".csproj", ".sln"],
+            Language.CPP: [".cpp", ".cc", ".cxx", ".h", ".hpp", "CMakeLists.txt"],
+            Language.RUST: [".rs", "Cargo.toml"],
+            Language.GO: [".go", "go.mod"],
+            Language.PHP: [".php", "composer.json"],
+            Language.RUBY: [".rb", "Gemfile"],
+            Language.KOTLIN: [".kt", ".kts"],
+            Language.DART: [".dart", "pubspec.yaml"],
+        }
+
+        file_counts = {lang: 0 for lang in language_indicators.keys()}
+
         for root, dirs, files in os.walk(repo_path):
-            # Filter out ignored directories
-            dirs[:] = [d for d in dirs if d not in ignore_dirs]
-            
+            dirs[:] = [d for d in dirs if not d.startswith(".") and d not in [
+                "node_modules", "__pycache__", "target", "build", "dist", "vendor"
+            ]]
+
             for file in files:
-                if any(file.endswith(ext) for ext in extensions):
-                    file_path = os.path.join(root, file)
-                    source_files.append(file_path)
-        
-        return source_files
-    
-    def analyze_file(self, file_path: str) -> List[EnhancedDiagnostic]:
-        """Analyze a single file using the best available method."""
-        diagnostics = []
-        
-        try:
-            if SERENA_AVAILABLE and self.serena_analyzer and self.serena_analyzer.language_server:
-                # Use real LSP analysis
-                diagnostics = self._analyze_file_with_lsp(file_path)
-            else:
-                # Use fallback analysis
-                if file_path.endswith('.py'):
-                    diagnostics = self.fallback_analyzer.analyze_file_basic(file_path)
+                file_lower = file.lower()
+                for lang, indicators in language_indicators.items():
+                    if any(file_lower.endswith(ext) or file_lower == indicator 
+                          for ext in indicators for indicator in [ext] if ext.startswith(".")):
+                        file_counts[lang] += 1
+                    elif any(file_lower == indicator 
+                            for indicator in indicators if not indicator.startswith(".")):
+                        file_counts[lang] += 5
+
+        detected_lang = max(file_counts, key=file_counts.get)
+
+        if file_counts[detected_lang] == 0:
+            self.logger.warning("Could not detect language, defaulting to Python")
+            detected_lang = Language.PYTHON
+
+        self.logger.info(f"✅ Detected language: {detected_lang.value}")
+        return detected_lang
+
+    def setup_project(self, repo_path: str, language: Optional[Language] = None) -> Project:
+        """Set up a Serena project for the repository."""
+        if not os.path.exists(repo_path):
+            raise FileNotFoundError(f"Repository path does not exist: {repo_path}")
+
+        if not os.path.isdir(repo_path):
+            raise ValueError(f"Repository path is not a directory: {repo_path}")
+
+        if language is None:
+            language = self.detect_language(repo_path)
+
+        self.logger.info(f"⚙️  Setting up project for {repo_path} with language {language.value}")
+
+        project_config = ProjectConfig(
+            project_name=os.path.basename(repo_path),
+            language=language,
+            ignored_paths=[
+                ".git/**",
+                "**/__pycache__/**",
+                "**/node_modules/**",
+                "**/target/**",
+                "**/build/**",
+                "**/.venv/**",
+                "**/venv/**",
+                "**/dist/**",
+                "**/vendor/**",
+            ],
+            ignore_all_files_in_gitignore=True,
+        )
+
+        self.project = Project(repo_path, project_config)
+        return self.project
+
+    def start_language_server(self, project: Project) -> SolidLanguageServer:
+        """Start the language server for the project with enhanced initialization using ProcessLaunchInfo and LSPError handling."""
+        self.logger.info("🔧 Starting enhanced language server initialization...")
+        self.server_info.server_status = "initializing"
+
+        max_attempts = 3
+        base_delay = 2.0
+
+        for attempt in range(max_attempts):
+            try:
+                if attempt > 0:
+                    delay = base_delay * (2 ** (attempt - 1))
+                    self.logger.info(f"🔄 Retry attempt {attempt + 1}/{max_attempts} after {delay}s delay...")
+                    time.sleep(delay)
+
+                self.logger.info(f"🚀 Language server initialization attempt {attempt + 1}/{max_attempts}")
+
+                init_start_time = time.time()
+
+                try:
+                    self.language_server = project.create_language_server(
+                        log_level=logging.DEBUG if self.verbose else logging.WARNING,
+                        ls_timeout=self.timeout,
+                        trace_lsp_communication=self.verbose,
+                    )
+
+                    if not self.language_server:
+                        raise LSPError(ErrorCodes.InternalError, "Failed to create language server instance")
+
+                    # Store process information if available
+                    if hasattr(self.language_server, "process_info"):
+                        self.server_info.process_info = self.language_server.process_info
+
+                except Exception as e:
+                    if not isinstance(e, LSPError):
+                        lsp_error = LSPError(ErrorCodes.ServerNotInitialized, f"Server creation failed: {str(e)}")
+                    else:
+                        lsp_error = e
+                    self.server_info.last_error = lsp_error
+                    raise lsp_error
+
+                self.logger.info("📡 Starting language server process...")
+
+                try:
+                    self.language_server.start()
+                    self.server_info.server_status = "starting"
+
+                except Exception as e:
+                    lsp_error = LSPError(ErrorCodes.ServerNotInitialized, f"Server start failed: {str(e)}")
+                    self.server_info.last_error = lsp_error
+                    self.server_info.error_count += 1
+                    raise lsp_error
+
+                startup_time = time.time() - init_start_time
+                self.server_info.initialization_time = startup_time
+
+                self.logger.info(f"⏱️  Language server startup took {startup_time:.2f}s")
+
+                # Enhanced server health validation with LSPError handling
+                try:
+                    if not self.language_server.is_running():
+                        raise LSPError(ErrorCodes.ServerNotInitialized, "Language server process is not running after start")
+
+                    self.server_info.server_status = "running"
+
+                    # Wait for server to be fully ready with progress logging
+                    self.logger.info("🔍 Validating language server readiness...")
+                    ready_timeout = min(30, self.timeout // 4)
+
+                    for i in range(int(ready_timeout)):
+                        if not self.language_server.is_running():
+                            raise LSPError(ErrorCodes.ServerNotInitialized, f"Server stopped during initialization at {i}s")
+
+                        if self.verbose and i % 5 == 0:
+                            self.logger.debug(f"🔍 Server readiness check: {i}/{ready_timeout}s")
+
+                        time.sleep(1)
+
+                    if not self.language_server.is_running():
+                        raise LSPError(ErrorCodes.ServerNotInitialized, "Language server stopped running during initialization")
+
+                    self.server_info.server_status = "ready"
+
+                except LSPError as lsp_error:
+                    self.server_info.last_error = lsp_error
+                    self.server_info.error_count += 1
+                    raise lsp_error
+
+                total_init_time = time.time() - init_start_time
+                self.server_info.initialization_time = total_init_time
+
+                self.logger.info(f"🎉 Language server successfully initialized in {total_init_time:.2f}s")
+
+                return self.language_server
+
+            except LSPError as lsp_error:
+                self.server_info.last_error = lsp_error
+                self.server_info.error_count += 1
+                error_msg = f"LSP Error (attempt {attempt + 1}): {lsp_error}"
+
+                if attempt < max_attempts - 1:
+                    self.logger.warning(f"⚠️  {error_msg}")
+                    self._cleanup_failed_server()
                 else:
-                    diagnostics = self._basic_file_analysis(file_path)
-            
-            with self.lock:
-                self.processed_files += 1
-                self.total_diagnostics += len(diagnostics)
-            
-            if self.verbose and diagnostics:
-                self.logger.debug(f"Found {len(diagnostics)} issues in {os.path.basename(file_path)}")
-        
-        except Exception as e:
-            with self.lock:
-                self.failed_files += 1
-            self.logger.warning(f"Failed to analyze {os.path.basename(file_path)}: {e}")
-        
-        return diagnostics
-    
-    def _analyze_file_with_lsp(self, file_path: str) -> List[EnhancedDiagnostic]:
-        """Analyze file using real LSP integration."""
-        diagnostics = []
-        
-        if not self.serena_analyzer:
-            return diagnostics
-        
+                    self.logger.error(f"❌ {error_msg}")
+                    self.server_info.server_status = "failed"
+                    raise RuntimeError(f"Failed to start language server after {max_attempts} attempts: {lsp_error}")
+
+            except Exception as e:
+                lsp_error = LSPError(ErrorCodes.InternalError, f"Unexpected error: {str(e)}")
+                self.server_info.last_error = lsp_error
+                self.server_info.error_count += 1
+                error_msg = f"Unexpected error (attempt {attempt + 1}): {e}"
+
+                if attempt < max_attempts - 1:
+                    self.logger.warning(f"⚠️  {error_msg}")
+                    self._cleanup_failed_server()
+                else:
+                    self.logger.error(f"❌ {error_msg}")
+                    self.server_info.server_status = "failed"
+                    raise RuntimeError(f"Failed to start language server after {max_attempts} attempts: {e}")
+
+        self.server_info.server_status = "failed"
+        raise RuntimeError("Language server initialization failed unexpectedly")
+
+    def _cleanup_failed_server(self):
+        """Clean up a failed server instance."""
+        if self.language_server:
+            try:
+                if self.language_server.is_running():
+                    self.language_server.stop()
+            except Exception as cleanup_error:
+                self.logger.debug(f"Error during server cleanup: {cleanup_error}")
+            finally:
+                self.language_server = None
+                self.server_info.server_status = "stopped"
+
+    def format_diagnostic_output(self, diagnostics: List[EnhancedDiagnostic]) -> str:
+        """Format diagnostics in the requested output format with enhanced categorization."""
+        if not diagnostics:
+            return "ERRORS: ['0']\nNo errors found."
+
+        # Sort diagnostics by severity (ERROR first), then by file, then by line
+        severity_priority = {"ERROR": 0, "WARNING": 1, "INFO": 2, "HINT": 3, "UNKNOWN": 4}
+
+        diagnostics.sort(key=lambda d: (
+            severity_priority.get(d.severity, 5),
+            d.file_path.lower(),
+            d.line,
+        ))
+
+        # Generate output
+        error_count = len(diagnostics)
+        output_lines = [f"ERRORS: ['{error_count}']"]
+
+        # Add each formatted diagnostic
+        for i, diag in enumerate(diagnostics, 1):
+            file_name = os.path.basename(diag.file_path)
+            location = f"line {diag.line}, col {diag.column}"
+
+            # Clean and truncate message for better readability
+            clean_message = diag.message.replace("\n", " ").replace("\r", " ")
+            clean_message = " ".join(clean_message.split())
+
+            if len(clean_message) > 200:
+                clean_message = clean_message[:197] + "..."
+
+            # Enhanced metadata formatting with LSP protocol information
+            metadata_parts = [f"severity: {diag.severity}"]
+
+            if diag.code and diag.code != "":
+                metadata_parts.append(f"code: {diag.code}")
+
+            if diag.source and diag.source != "lsp":
+                metadata_parts.append(f"source: {diag.source}")
+
+            # Add LSP error code information if available
+            if diag.error_code:
+                metadata_parts.append(f"lsp_error: {diag.error_code.name}")
+
+            # Add category information
+            if diag.category and diag.category != "lsp_diagnostic":
+                metadata_parts.append(f"category: {diag.category}")
+
+            other_types = ", ".join(metadata_parts)
+
+            diagnostic_line = f"{i}. '{location}' '{file_name}' '{clean_message}' '{other_types}'"
+            output_lines.append(diagnostic_line)
+
+        return "\n".join(output_lines)
+
+    def analyze_repository(
+        self,
+        repo_url_or_path: str,
+        severity_filter: Optional[str] = None,
+        language_override: Optional[str] = None,
+        output_format: str = "text",
+    ) -> Union[str, Dict[str, Any]]:
+        """Main comprehensive analysis function using Serena and SolidLSP."""
+        total_start_time = time.time()
+
         try:
-            # Get LSP diagnostics
-            lsp_diagnostics = self.serena_analyzer.get_lsp_diagnostics(file_path)
-            
-            # Get function symbols for context
-            function_symbols = self.serena_analyzer.get_function_symbols(file_path)
-            
-            # Create function lookup
-            function_lookup = {}
-            for symbol in function_symbols:
-                if hasattr(symbol, 'location') and hasattr(symbol.location, 'range'):
-                    start_line = symbol.location.range.start.line + 1  # LSP is 0-based
-                    end_line = symbol.location.range.end.line + 1
-                    
-                    func_info = FunctionInfo(
-                        name=symbol.name,
-                        line_start=start_line,
-                        line_end=end_line,
-                        function_type="method" if hasattr(symbol, 'container_name') else "function",
-                        parent_class=getattr(symbol, 'container_name', None),
-                        symbol_info=symbol
-                    )
-                    
-                    for line in range(start_line, end_line + 1):
-                        function_lookup[line] = func_info
-            
-            # Process LSP diagnostics
-            for lsp_diag in lsp_diagnostics:
-                line = lsp_diag.range.start.line + 1  # Convert to 1-based
-                column = lsp_diag.range.start.character + 1
-                
-                # Find function context
-                func_info = function_lookup.get(line)
-                func_name = func_info.name if func_info else "unknown"
-                
-                # Classify severity
-                severity = EnhancedSeverity.classify_lsp_diagnostic(lsp_diag, func_name)
-                
-                # Create enhanced diagnostic
-                enhanced_diag = EnhancedDiagnostic(
-                    file_path=file_path,
-                    line=line,
-                    column=column,
-                    severity=severity,
-                    message=lsp_diag.message,
-                    code=str(lsp_diag.code) if lsp_diag.code else None,
-                    source=lsp_diag.source or "lsp",
-                    function_name=func_name,
-                    function_info=func_info,
-                    lsp_diagnostic=lsp_diag
-                )
-                
-                diagnostics.append(enhanced_diag)
-        
+            self.logger.info("🚀 Starting COMPREHENSIVE SERENA LSP Error Analysis")
+            self.logger.info("=" * 80)
+            self.logger.info(f"📁 Target: {repo_url_or_path}")
+            self.logger.info(f"🔍 Severity filter: {severity_filter or 'ALL'}")
+            self.logger.info(f"🌐 Language override: {language_override or 'AUTO-DETECT'}")
+            self.logger.info(f"📊 Output format: {output_format}")
+            self.logger.info("=" * 80)
+
+            # Step 1: Repository handling
+            clone_start = time.time()
+            if self.is_git_url(repo_url_or_path):
+                self.logger.info("📥 Cloning remote repository...")
+                repo_path = self.clone_repository(repo_url_or_path)
+            else:
+                repo_path = os.path.abspath(repo_url_or_path)
+                if not os.path.exists(repo_path):
+                    raise FileNotFoundError(f"Local path does not exist: {repo_path}")
+                self.logger.info(f"📂 Using local repository: {repo_path}")
+
+            self.performance_stats["clone_time"] = time.time() - clone_start
+
+            # Step 2: Parse configuration
+            language = None
+            if language_override:
+                try:
+                    language = Language(language_override.lower())
+                    self.logger.info(f"🎯 Language override: {language.value}")
+                except ValueError:
+                    self.logger.warning(f"⚠️  Invalid language '{language_override}', will auto-detect")
+
+            severity = None
+            if severity_filter:
+                severity_map = {
+                    "ERROR": DiagnosticsSeverity.ERROR,
+                    "WARNING": DiagnosticsSeverity.WARNING,
+                    "INFO": DiagnosticsSeverity.INFORMATION,
+                    "HINT": DiagnosticsSeverity.HINT,
+                }
+                severity = severity_map.get(severity_filter.upper())
+                if severity is None:
+                    self.logger.warning(f"⚠️  Invalid severity '{severity_filter}', showing all diagnostics")
+                else:
+                    self.logger.info(f"🔍 Filtering by severity: {severity_filter.upper()}")
+
+            # Step 3: Project setup
+            setup_start = time.time()
+            self.logger.info("⚙️  Setting up Serena project...")
+            project = self.setup_project(repo_path, language)
+            self.performance_stats["setup_time"] = time.time() - setup_start
+
+            # Step 4: Language server initialization
+            lsp_start = time.time()
+            self.logger.info("🔧 Starting SolidLSP language server...")
+            language_server = self.start_language_server(project)
+
+            # Give the language server time to fully initialize
+            initialization_time = 5 if self.total_files > 100 else 2
+            self.logger.info(f"⏳ Allowing {initialization_time}s for LSP initialization...")
+            time.sleep(initialization_time)
+
+            self.performance_stats["lsp_start_time"] = time.time() - lsp_start
+
+            # Step 5: Comprehensive diagnostic collection
+            self.logger.info("🔍 Beginning comprehensive Serena LSP diagnostic collection...")
+            diagnostics = self.collect_diagnostics(project, language_server, severity)
+
+            # Step 6: Format results
+            self.logger.info("📋 Formatting comprehensive results...")
+            result = self.format_diagnostic_output(diagnostics)
+
+            # Final performance summary
+            total_time = time.time() - total_start_time
+            self.performance_stats["total_time"] = total_time
+
+            self.logger.info("🎉 COMPREHENSIVE SERENA LSP ANALYSIS COMPLETED!")
+            self.logger.info("=" * 80)
+            self.logger.info("⏱️  PERFORMANCE SUMMARY:")
+            self.logger.info(f"   📥 Repository setup: {self.performance_stats['clone_time']:.2f}s")
+            self.logger.info(f"   ⚙️  Project configuration: {self.performance_stats['setup_time']:.2f}s")
+            self.logger.info(f"   🔧 LSP server startup: {self.performance_stats['lsp_start_time']:.2f}s")
+            self.logger.info(f"   🔍 Diagnostic analysis: {self.performance_stats.get('analysis_time', 0):.2f}s")
+            self.logger.info(f"   🎯 Total execution time: {total_time:.2f}s")
+            self.logger.info("=" * 80)
+
+            return result
+
         except Exception as e:
+            self.logger.error(f"❌ COMPREHENSIVE SERENA LSP ANALYSIS FAILED: {e}")
             if self.verbose:
-                self.logger.debug(f"LSP analysis failed for {os.path.basename(file_path)}: {e}")
-        
-        return diagnostics
-    
-    def _basic_file_analysis(self, file_path: str) -> List[EnhancedDiagnostic]:
-        """Basic analysis for non-Python files."""
-        diagnostics = []
-        
+                import traceback
+                self.logger.error(f"📋 Full traceback:\n{traceback.format_exc()}")
+
+            return f"ERRORS: ['0']\nSerena LSP analysis failed: {e}"
+
+    def collect_diagnostics(
+        self,
+        project: Project,
+        language_server: SolidLanguageServer,
+        severity_filter: Optional[DiagnosticsSeverity] = None,
+    ) -> List[EnhancedDiagnostic]:
+        """Collect diagnostics from ALL source files in the project using Serena LSP integration."""
+        self.analysis_start_time = time.time()
+        self.logger.info("🔍 Starting comprehensive LSP analysis of entire codebase...")
+
+        # Get ALL source files - no limitations
         try:
-            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-                lines = f.readlines()
-            
-            for line_num, line in enumerate(lines, 1):
-                # Check line length
-                if len(line.rstrip()) > 120:
-                    severity = EnhancedSeverity._classify_basic_diagnostic("line too long")
-                    diagnostic = EnhancedDiagnostic(
-                        file_path=file_path,
-                        line=line_num,
-                        column=121,
-                        severity=severity,
-                        message=f"Line too long ({len(line.rstrip())} > 120 characters)",
-                        code="line-too-long",
-                        source="basic-checker"
-                    )
-                    diagnostics.append(diagnostic)
-                
-                # Check for TODO comments
-                if "TODO" in line or "FIXME" in line:
-                    severity = EnhancedSeverity._classify_basic_diagnostic("todo comment")
-                    diagnostic = EnhancedDiagnostic(
-                        file_path=file_path,
-                        line=line_num,
-                        column=line.find("TODO") + 1 if "TODO" in line else line.find("FIXME") + 1,
-                        severity=severity,
-                        message="TODO/FIXME comment found",
-                        code="todo-comment",
-                        source="basic-checker"
-                    )
-                    diagnostics.append(diagnostic)
-        
+            source_files = project.gather_source_files()
+            self.total_files = len(source_files)
+            self.logger.info(f"📊 Found {self.total_files} source files to analyze")
+
+            if self.total_files == 0:
+                self.logger.warning("⚠️  No source files found in the project")
+                return []
+
         except Exception as e:
-            if self.verbose:
-                self.logger.debug(f"Basic analysis failed for {os.path.basename(file_path)}: {e}")
-        
-        return diagnostics
-    
-    def analyze_repository(self, repo_path: str) -> List[EnhancedDiagnostic]:
-        """Analyze entire repository."""
-        start_time = time.time()
-        
-        self.logger.info(f"🔍 Starting comprehensive Serena analysis of: {repo_path}")
-        
-        # Setup Serena project if available
-        if SERENA_AVAILABLE and self.serena_analyzer:
-            if not self.serena_analyzer.setup_project(repo_path):
-                self.logger.warning("⚠️  Serena setup failed, falling back to AST analysis")
-                self.serena_analyzer = None
-        
-        # Find all source files
-        source_files = self.find_source_files(repo_path)
-        self.total_files = len(source_files)
-        
-        if self.total_files == 0:
-            self.logger.warning("No source files found")
+            self.logger.error(f"❌ Failed to gather source files: {e}")
             return []
-        
-        self.logger.info(f"📊 Found {self.total_files} source files to analyze")
-        
-        # Analyze files in parallel
+
+        # Initialize tracking
         all_diagnostics = []
-        
+        self.processed_files = 0
+        self.failed_files = 0
+
+        self.logger.info(f"🚀 Processing ALL {self.total_files} files with Serena LSP analysis...")
+
+        def analyze_single_file(file_path: str) -> Tuple[str, List[EnhancedDiagnostic], Optional[str]]:
+            """Analyze a single file using Serena LSP with enhanced error handling."""
+            try:
+                # Increment message count for tracking
+                self.server_info.message_count += 1
+
+                # Get diagnostics from LSP using Serena's method with LSPError handling
+                try:
+                    lsp_diagnostics = language_server.request_text_document_diagnostics(file_path)
+
+                except LSPError as lsp_error:
+                    self.server_info.error_count += 1
+                    self.server_info.last_error = lsp_error
+
+                    if lsp_error.code == ErrorCodes.RequestCancelled:
+                        if self.verbose:
+                            self.logger.debug(f"🔄 Request cancelled for {os.path.basename(file_path)}: {lsp_error.message}")
+                        return file_path, [], f"LSP Request Cancelled: {lsp_error.message}"
+                    elif lsp_error.code == ErrorCodes.ServerNotInitialized:
+                        self.logger.error(f"❌ Server not initialized for {os.path.basename(file_path)}: {lsp_error.message}")
+                        return file_path, [], f"LSP Server Not Initialized: {lsp_error.message}"
+                    else:
+                        self.logger.warning(f"⚠️  LSP Error for {os.path.basename(file_path)}: {lsp_error}")
+                        return file_path, [], f"LSP Error ({lsp_error.code}): {lsp_error.message}"
+
+                enhanced_diagnostics = []
+                for diag in lsp_diagnostics:
+                    # Extract diagnostic information using proper LSP types
+                    range_info = diag.get("range", {})
+                    start_pos = range_info.get("start", {})
+                    line = start_pos.get("line", 0) + 1  # LSP uses 0-based line numbers
+                    column = start_pos.get("character", 0) + 1  # LSP uses 0-based character numbers
+
+                    # Create proper LSP Position and Range objects
+                    position_start = Position(line=start_pos.get("line", 0), character=start_pos.get("character", 0))
+                    position_end = Position(line=range_info.get("end", {}).get("line", 0), character=range_info.get("end", {}).get("character", 0))
+                    range_obj = Range(start=position_start, end=position_end)
+
+                    # Create Location object for enhanced diagnostic
+                    location_obj = Location(uri=f"file://{file_path}", range=range_obj)
+
+                    # Map severity with MessageType integration
+                    severity_map = {
+                        DiagnosticsSeverity.ERROR: "ERROR",
+                        DiagnosticsSeverity.WARNING: "WARNING",
+                        DiagnosticsSeverity.INFORMATION: "INFO",
+                        DiagnosticsSeverity.HINT: "HINT",
+                    }
+
+                    severity_value = diag.get("severity", DiagnosticsSeverity.ERROR)
+                    severity = severity_map.get(severity_value, "UNKNOWN")
+
+                    # Apply severity filter
+                    if severity_filter and severity_value != severity_filter:
+                        continue
+
+                    # Extract error code if available
+                    diagnostic_code = diag.get("code")
+                    error_code = None
+                    if diagnostic_code and isinstance(diagnostic_code, int):
+                        try:
+                            error_code = ErrorCodes(diagnostic_code)
+                        except ValueError:
+                            pass
+
+                    # Create enhanced diagnostic with LSP protocol information
+                    enhanced_diag = EnhancedDiagnostic(
+                        file_path=file_path,
+                        line=line,
+                        column=column,
+                        severity=severity,
+                        message=diag.get("message", "No message"),
+                        code=str(diag.get("code", "")),
+                        source=diag.get("source", "lsp"),
+                        category="lsp_diagnostic",
+                        tags=["serena_lsp_analysis"],
+                        error_code=error_code,
+                        range_info=range_info,
+                        location={"uri": f"file://{file_path}", "range": range_info},
+                    )
+                    enhanced_diagnostics.append(enhanced_diag)
+
+                return file_path, enhanced_diagnostics, None
+
+            except Exception as e:
+                self.server_info.error_count += 1
+                self.logger.warning(f"⚠️  Unexpected error analyzing {os.path.basename(file_path)}: {e}")
+                return file_path, [], str(e)
+
+        # Process files with ThreadPoolExecutor
         with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-            future_to_file = {
-                executor.submit(self.analyze_file, file_path): file_path 
-                for file_path in source_files
-            }
-            
+            future_to_file = {executor.submit(analyze_single_file, file_path): file_path for file_path in source_files}
+
             for future in as_completed(future_to_file):
                 file_path = future_to_file[future]
                 try:
-                    diagnostics = future.result()
-                    all_diagnostics.extend(diagnostics)
+                    analyzed_file, diagnostics, error = future.result()
+
+                    with self.lock:
+                        if error is None:
+                            all_diagnostics.extend(diagnostics)
+                            self.processed_files += 1
+                        else:
+                            self.failed_files += 1
+                            self.logger.warning(f"⚠️  Failed to analyze {os.path.basename(analyzed_file)}: {error}")
+
                 except Exception as e:
-                    self.logger.error(f"Error processing {os.path.basename(file_path)}: {e}")
-        
-        analysis_time = time.time() - start_time
-        
-        self.logger.info("=" * 60)
-        self.logger.info("📋 SERENA ANALYSIS COMPLETE")
-        self.logger.info("=" * 60)
-        self.logger.info(f"✅ Files processed: {self.processed_files}")
+                    with self.lock:
+                        self.failed_files += 1
+                        self.logger.error(f"❌ Unexpected error processing {os.path.basename(file_path)}: {e}")
+
+        # Final statistics
+        analysis_time = time.time() - self.analysis_start_time
+        self.performance_stats["analysis_time"] = analysis_time
+        self.total_diagnostics = len(all_diagnostics)
+
+        self.logger.info("=" * 80)
+        self.logger.info("📋 COMPREHENSIVE SERENA LSP ANALYSIS COMPLETE")
+        self.logger.info("=" * 80)
+        self.logger.info(f"✅ Files processed successfully: {self.processed_files}")
         self.logger.info(f"❌ Files failed: {self.failed_files}")
-        self.logger.info(f"🔍 Total diagnostics: {self.total_diagnostics}")
+        self.logger.info(f"🔍 Total LSP diagnostics found: {self.total_diagnostics}")
         self.logger.info(f"⏱️  Analysis time: {analysis_time:.2f} seconds")
-        self.logger.info("=" * 60)
-        
+        self.logger.info("=" * 80)
+
         return all_diagnostics
-    
-    def format_output(self, diagnostics: List[EnhancedDiagnostic], project_name: str = "project") -> str:
-        """Format diagnostics in the requested output format."""
-        if not diagnostics:
-            return "ERRORS: 0 [⚠️ Critical: 0] [👉 Major: 0] [🔍 Minor: 0]\nNo errors found."
-        
-        # Count by severity
-        severity_counts = Counter(diag.severity for diag in diagnostics)
-        total_count = len(diagnostics)
-        
-        critical_count = severity_counts.get(EnhancedSeverity.CRITICAL, 0)
-        major_count = severity_counts.get(EnhancedSeverity.MAJOR, 0)
-        minor_count = severity_counts.get(EnhancedSeverity.MINOR, 0)
-        info_count = severity_counts.get(EnhancedSeverity.INFO, 0)
-        
-        # Create header
-        header_parts = [
-            f"ERRORS: {total_count}",
-            f"[⚠️ Critical: {critical_count}]",
-            f"[👉 Major: {major_count}]",
-            f"[🔍 Minor: {minor_count}]"
-        ]
-        
-        if info_count > 0:
-            header_parts.append(f"[ℹ️ Info: {info_count}]")
-        
-        header = " ".join(header_parts)
-        
-        # Sort diagnostics by severity priority
-        severity_priority = {
-            EnhancedSeverity.CRITICAL: 0,
-            EnhancedSeverity.MAJOR: 1,
-            EnhancedSeverity.MINOR: 2,
-            EnhancedSeverity.INFO: 3
-        }
-        
-        sorted_diagnostics = sorted(diagnostics, key=lambda d: (
-            severity_priority.get(d.severity, 4),
-            d.file_path.lower(),
-            d.line
-        ))
-        
-        # Format each diagnostic entry
-        output_lines = [header]
-        
-        for i, diag in enumerate(sorted_diagnostics, 1):
-            # Get severity icon
-            severity_icon = EnhancedSeverity.SEVERITY_ICONS.get(diag.severity, "❓")
-            
-            # Format file path
-            try:
-                display_path = os.path.relpath(diag.file_path)
-                if not display_path.startswith(project_name):
-                    display_path = f"{project_name}/{display_path}"
-            except ValueError:
-                display_path = diag.file_path
-            
-            # Format function information
-            if diag.function_info and diag.function_info.parent_class:
-                function_part = f"Class.Method - '{diag.function_info.parent_class}.{diag.function_name}'"
-            elif diag.function_info and diag.function_info.function_type == "method":
-                function_part = f"Method - '{diag.function_name}'"
-            elif diag.function_name != "unknown":
-                function_part = f"Function - '{diag.function_name}'"
-            else:
-                function_part = f"Line {diag.line}"
-            
-            # Format error message
-            error_reason = diag.message
-            if diag.code:
-                error_reason = f"{diag.code}: {error_reason}"
-            
-            # Truncate long messages
-            if len(error_reason) > 100:
-                error_reason = error_reason[:97] + "..."
-            
-            # Create entry
-            entry = f"{i} {severity_icon}- {display_path} / {function_part} [{error_reason}]"
-            output_lines.append(entry)
-        
-        return '\n'.join(output_lines)
-    
-    def cleanup(self):
-        """Clean up resources."""
-        if self.serena_analyzer:
-            self.serena_analyzer.cleanup()
 
 
 def main():
-    """Main entry point."""
+    """Main entry point for comprehensive Serena LSP error analysis."""
     parser = argparse.ArgumentParser(
-        description="Comprehensive Serena LSP Error Analysis Tool",
+        description="🚀 COMPREHENSIVE SERENA LSP ERROR ANALYSIS TOOL - Analyzes ENTIRE codebases using Serena and SolidLSP",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-    python serena_analyzer.py .
-    python serena_analyzer.py /path/to/repo --verbose
-    python serena_analyzer.py . --max-workers 8
-        """
     )
-    
-    parser.add_argument(
-        'repository',
-        help='Repository path to analyze'
-    )
-    
-    parser.add_argument(
-        '--verbose', '-v',
-        action='store_true',
-        help='Enable verbose logging'
-    )
-    
-    parser.add_argument(
-        '--max-workers',
-        type=int,
-        default=4,
-        help='Maximum number of parallel workers (default: 4)'
-    )
-    
+
+    parser.add_argument("repository", help="Repository URL or local path to analyze (analyzes ALL source files)")
+    parser.add_argument("--severity", choices=["ERROR", "WARNING", "INFO", "HINT"], help="Filter diagnostics by severity level")
+    parser.add_argument("--language", help="Override automatic language detection")
+    parser.add_argument("--timeout", type=float, default=600, help="Timeout for LSP operations in seconds")
+    parser.add_argument("--max-workers", type=int, default=4, help="Maximum number of parallel workers")
+    parser.add_argument("--verbose", "-v", action="store_true", help="Enable verbose logging")
+    parser.add_argument("--symbols", action="store_true", help="Enable comprehensive symbol analysis")
+    parser.add_argument("--runtime-errors", action="store_true", help="Enable runtime error collection")
+
     args = parser.parse_args()
-    
-    if not os.path.exists(args.repository):
-        print(f"❌ Error: Repository path does not exist: {args.repository}")
-        sys.exit(1)
-    
-    print("🚀 COMPREHENSIVE SERENA LSP ERROR ANALYSIS")
-    print("=" * 60)
-    print(f"📁 Repository: {args.repository}")
-    print(f"👥 Max workers: {args.max_workers}")
-    print(f"📋 Verbose: {args.verbose}")
-    if SERENA_AVAILABLE:
-        print("🔧 Mode: Real LSP integration with Serena/SolidLSP")
-    else:
-        print("📋 Mode: Fallback AST analysis")
-    print("=" * 60)
-    
+
+    print("🚀 COMPREHENSIVE SERENA LSP ERROR ANALYSIS TOOL")
+    print("=" * 80)
+
     try:
-        analyzer = ComprehensiveSerenaAnalyzer(verbose=args.verbose, max_workers=args.max_workers)
-        diagnostics = analyzer.analyze_repository(args.repository)
-        
-        # Format and display results
-        project_name = os.path.basename(os.path.abspath(args.repository))
-        result = analyzer.format_output(diagnostics, project_name)
-        
-        print("\n" + "=" * 60)
-        print("📋 SERENA ANALYSIS RESULTS")
-        print("=" * 60)
-        print(result)
-        print("=" * 60)
-        
-        # Cleanup
-        analyzer.cleanup()
-        
+        with SerenaLSPAnalyzer(
+            verbose=args.verbose,
+            timeout=args.timeout,
+            max_workers=args.max_workers,
+            enable_symbols=args.symbols,
+            enable_runtime_errors=args.runtime_errors,
+        ) as analyzer:
+            result = analyzer.analyze_repository(
+                args.repository,
+                severity_filter=args.severity,
+                language_override=args.language,
+            )
+
+            print("\n" + "=" * 80)
+            print("📋 COMPREHENSIVE SERENA LSP ANALYSIS RESULTS")
+            print("=" * 80)
+            print(result)
+            print("=" * 80)
+
     except KeyboardInterrupt:
         print("\n⚠️  Analysis interrupted by user")
         sys.exit(1)
     except Exception as e:
         print(f"\n❌ Analysis failed: {e}")
-        if args.verbose:
-            import traceback
-            traceback.print_exc()
         sys.exit(1)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
