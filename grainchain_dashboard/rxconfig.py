@@ -1,43 +1,23 @@
-"""Reflex configuration for Grainchain Dashboard."""
+"""Simple Reflex configuration for Grainchain Dashboard."""
 
 import reflex as rx
-import os
 
-# Simple configuration without external dependencies
-class SimpleConfig:
-    APP_NAME = "app"
-    HOST = "0.0.0.0"
-    FRONTEND_PORT = 3000
-    BACKEND_PORT = 8000
-    DATABASE_URL = "sqlite:///grainchain.db"
-    DEBUG = True
-    DEFAULT_THEME = "dark"
-
-config_settings = SimpleConfig()
-
-# Reflex configuration
 config = rx.Config(
     app_name="app",
     
     # Server configuration
-    backend_host=config_settings.HOST,
-    backend_port=config_settings.BACKEND_PORT,
+    backend_host="0.0.0.0",
+    backend_port=8001,
     
     # Frontend configuration
-    frontend_port=config_settings.FRONTEND_PORT,
-    
-    # Database configuration
-    db_url=config_settings.DATABASE_URL,
+    frontend_port=3001,
     
     # Environment
-    env=rx.Env.DEV if config_settings.DEBUG else rx.Env.PROD,
-    
-    # Disable sitemap plugin warnings
-    disable_plugins=["reflex.plugins.sitemap.SitemapPlugin"],
+    env=rx.Env.DEV,
     
     # Styling
     theme=rx.theme(
-        appearance=config_settings.DEFAULT_THEME,
+        appearance="dark",
         has_background=True,
         radius="medium",
         scaling="100%",
