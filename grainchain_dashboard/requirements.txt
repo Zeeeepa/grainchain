@@ -1,22 +1,13 @@
 # Core dependencies
 reflex>=0.4.0
-grainchain>=0.1.0
-
-# Grainchain providers (optional)
-grainchain[e2b]
-grainchain[daytona] 
-grainchain[morph]
-grainchain[modal]
 
 # Additional dependencies
 aiofiles>=23.0.0
 cryptography>=41.0.0
 pydantic>=2.0.0
 python-dotenv>=1.0.0
-asyncio-mqtt>=0.13.0
 
 # Development dependencies
 pytest>=7.0.0
 pytest-asyncio>=0.21.0
 black>=23.0.0
-

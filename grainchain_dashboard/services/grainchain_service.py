@@ -7,9 +7,17 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime
 
-from grainchain import Sandbox, SandboxConfig, get_providers_info, check_provider
-from grainchain.core.interfaces import ExecutionResult, FileInfo, SandboxStatus
-from grainchain.core.exceptions import GrainchainError, ProviderError, TimeoutError
+try:
+    from grainchain import Sandbox, SandboxConfig, get_providers_info, check_provider
+    from grainchain.core.interfaces import ExecutionResult, FileInfo, SandboxStatus
+    from grainchain.core.exceptions import GrainchainError, ProviderError, TimeoutError
+except ImportError:
+    # Use mock interfaces for demonstration
+    from grainchain_dashboard.mock_grainchain import (
+        Sandbox, SandboxConfig, get_providers_info, check_provider,
+        ExecutionResult, FileInfo, SandboxStatus,
+        GrainchainError, ProviderError, TimeoutError
+    )
 
 from grainchain_dashboard.config import config, get_provider_config, ProviderConfig
 

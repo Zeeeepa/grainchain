@@ -1,27 +1,26 @@
 """Reflex configuration file for Grainchain Dashboard."""
 
 import reflex as rx
-from .config import config
 
 # Reflex configuration
-config_reflex = rx.Config(
-    app_name="grainchain_dashboard",
+config = rx.Config(
+    app_name="simple_main",
     
     # Server configuration
-    backend_host=config.host,
-    backend_port=config.port,
+    backend_host="localhost",
+    backend_port=8000,
     
     # Frontend configuration
-    frontend_port=3000,
+    frontend_port=3001,
     
     # Database configuration (using SQLite for simplicity)
     db_url="sqlite:///grainchain_dashboard.db",
     
     # Environment
-    env=rx.Env.DEV if config.debug else rx.Env.PROD,
+    env=rx.Env.DEV,
     
     # API configuration
-    api_url=f"http://{config.host}:{config.port}",
+    api_url="http://localhost:8000",
     
     # Styling
     theme=rx.theme(
@@ -30,23 +29,4 @@ config_reflex = rx.Config(
         radius="medium",
         scaling="100%",
     ),
-    
-    # Performance
-    compile=not config.debug,
-    
-    # Tailwind CSS (optional)
-    tailwind={
-        "theme": {
-            "extend": {
-                "colors": {
-                    "primary": {
-                        "50": "#eff6ff",
-                        "500": "#3b82f6",
-                        "900": "#1e3a8a",
-                    }
-                }
-            }
-        }
-    }
 )
-

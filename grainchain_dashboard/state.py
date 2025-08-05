@@ -7,7 +7,10 @@ from dataclasses import asdict
 
 from grainchain_dashboard.services.grainchain_service import grainchain_service, SandboxInfo, SnapshotInfo
 from grainchain_dashboard.config import config, get_enabled_providers, get_provider_config, update_provider_config
-from grainchain.core.interfaces import ExecutionResult, FileInfo
+try:
+    from grainchain.core.interfaces import ExecutionResult, FileInfo
+except ImportError:
+    from grainchain_dashboard.mock_grainchain import ExecutionResult, FileInfo
 
 class DashboardState(rx.State):
     """Main state for the Grainchain Dashboard."""
