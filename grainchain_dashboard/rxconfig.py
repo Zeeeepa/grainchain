@@ -17,7 +17,7 @@ config_settings = SimpleConfig()
 
 # Reflex configuration
 config = rx.Config(
-    app_name="grainchain_dashboard",
+    app_name="app",
     
     # Server configuration
     backend_host=config_settings.HOST,

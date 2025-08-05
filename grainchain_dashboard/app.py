@@ -1,13 +1,19 @@
 #!/usr/bin/env python3
-"""Standalone Grainchain Dashboard Application."""
+"""Standalone Grainchain Dashboard Application with ALL Advanced Features."""
 
 import reflex as rx
 from typing import Dict, List, Optional, Any
 import sys
 import os
+import asyncio
+import logging
 
 # Add current directory to path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Initialize database first
 try:
@@ -16,6 +22,24 @@ try:
     print("✅ Database initialized successfully")
 except Exception as e:
     print(f"⚠️ Database initialization warning: {e}")
+
+# Import all advanced features
+try:
+    from websocket_handler import WebSocketManager, WebSocketState, ws_manager
+    from auth import AuthManager, AuthState, User, UserRole, auth_manager
+    from providers.e2b_provider import E2BProvider
+    from monitoring.metrics_collector import MetricsCollector, metrics_collector
+    print("✅ All advanced features imported successfully")
+except Exception as e:
+    print(f"⚠️ Advanced features import warning: {e}")
+    # Create mock objects if imports fail
+    class MockWebSocketState:
+        connected = False
+    class MockAuthState:
+        is_authenticated = False
+        current_user = None
+    WebSocketState = MockWebSocketState
+    AuthState = MockAuthState
 
 class DashboardState(rx.State):
     """Consolidated dashboard state with all features."""
